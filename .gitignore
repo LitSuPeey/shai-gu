@@ -1,0 +1,30 @@
+# ---- 数据与运行时产物 ----
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/name_map.json
+
+# B站「仅供学习」模块的本地状态（含会话凭据 / 个人订阅 / 抓取存档，切勿提交）
+data/bili_session.json
+data/bili_cred.json
+data/bili_ups.json
+data/bili_cache/
+data/bili_archive/
+data/bili_video/
+data/bili_asr/
+
+logs/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ---- 开发遗迹 ----
+.workbuddy/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

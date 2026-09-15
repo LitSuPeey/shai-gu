@@ -1,0 +1,14 @@
+# 统一换行符处理
+* text=auto
+
+# Windows 批处理必须 CRLF，否则双击 start.bat 行为异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源按二进制处理
+*.png binary
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.db binary

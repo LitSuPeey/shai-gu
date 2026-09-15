@@ -1,0 +1,36 @@
+# 筛骨 · 统一选股工作台 依赖清单
+# 推荐 Python 3.11+，实测 3.13 也可。
+# A股量化选股统一工作台 - 后端 + 静态前端。
+
+# Web 框架
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+
+# 数据
+pandas>=2.2
+numpy>=1.26
+akshare>=1.16
+
+# 其他
+requests>=2.31
+tqdm>=4.66
+
+# 快讯关键词提取（轮播条）与大周期 830000 探测
+jieba>=0.42
+py_mini_racer>=0.6
+
+# B站「仅供学习」模块：真实 Chrome TLS 指纹（规避 -352/-412 风控，免装浏览器）
+curl_cffi>=0.6
+
+# ---- 可选：B站「仅供学习」→ 本地视频文稿（离线语音转写）----
+# 二者装其一即可；都不装则该功能自动降级隐藏（不影响其它功能）。
+# 音频流匿名可取（playurl 无需登录），转写全部在本机完成、不上传。
+#   · 更推荐（多语言、GPU 快，零 torch 依赖）：
+#       pip install faster-whisper
+#     Windows + RTX 50 系需 CUDA 12.8 运行库 + cuDNN 9；CPU 用 int8 亦可（较慢）。
+#   · 中文更强、纯 CPU 也快（阿里达摩院）：
+#       pip install funasr modelscope
+# faster-whisper
+# funasr
+# modelscope
