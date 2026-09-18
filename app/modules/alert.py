@@ -6,9 +6,12 @@
   ② 产业链传导   上游涨价 → 中游提价 → 业绩兑现存在时滞，监测上游提前布局中游
   ③ 资金领先价格 5日涨幅 + 主力净流入 + 换手未放量 → 疑似资金提前埋伏
   ④ 拥挤度预警   换手分位 / 量能分位 / 20日涨幅 / 资金流出，多项触发 → 高点逃离
+  ⑤ 特殊概念     名字玄学：日期彩头（9·18「就要发」×中华「华」字辈）、生肖谐音
+                 （当前年＋即将到来的生肖年，如羊＝羊/洋/扬/阳）、动物字辈、代码吉利等
 
 模块清单（对应方案 engine/ 六件套）：
   get_calendar_alerts()  规律引擎（日历预热 + 埋伏窗口）
+  _special_scan()        特殊概念（名字玄学 / 谐音梗 / 生肖字辈，规则表可热更新）
   scan()                 主调度：采集 → 分析 → 汇总（供 /api/alert/run）
   build_report_html()    独立网页报告（深色模板，涨红跌绿）
 
@@ -126,13 +129,26 @@ DEFAULTS: dict = {
         #                                        放宽为 2，可在参数窗口调回 3）
     },
     "foreign": {"top_n": 10},                  # 外资重仓 Top N
+    "special": {
+        "window": 3,                           # 日期彩头 ±窗口(天)
+        "zodiac_lead_days": 150,               # 下一生肖提前多少天进入监控
+        "min_hits": 5,                         # 概念至少命中几只才展示
+        "top_n": 15,                           # 每个概念明细展示只数（按涨幅降序）
+        "excess_min": 1.5,                     # 常驻字辈触发①：命中组均涨 − 全市场均涨(百分点)
+        "surge_pct": 5.0,                      # 记作「大涨」的涨幅阈值(%)
+        "surge_n_min": 3,                      # 常驻字辈触发①：大涨只数下限
+        "limitup_min": 2,                      # 常驻字辈触发②：涨停只数下限
+        "limitup_ratio_min": 2.0,              # 常驻字辈触发②：涨停密度 ÷ 全市场涨停密度
+        "standing_top_n": 3,                   # 未触发的常驻字辈按超额取前 N 行作「观察」
+    },
 }
 
-SECTIONS = ["calendar", "stealth", "cold", "national", "foreign", "crowding", "chains"]
+SECTIONS = ["calendar", "stealth", "cold", "national", "foreign", "crowding", "chains",
+            "special"]
 SECTION_LABELS = {
     "calendar": "日历预警", "stealth": "异动侦测", "cold": "冷门板块",
     "national": "国家队资金", "foreign": "外资重仓", "crowding": "拥挤度监控",
-    "chains": "传导链与宏观",
+    "chains": "传导链与宏观", "special": "特殊概念",
 }
 
 
@@ -787,6 +803,434 @@ def _chain_radar(merged: pd.DataFrame, c: dict) -> list:
 
 
 # ==================================================================
+# 三·五、特殊概念（名字玄学 / 谐音梗 / 生肖字辈 / 日期彩头）
+# ------------------------------------------------------------------
+# A 股几乎每年都会轮动一轮「无厘头题材」：名字带某个字、谐音某个生肖、撞上某个
+# 纪念日的彩头，就会被资金选作情绪载体（「名字带龙就涨」「代码吉利就炒」
+# 「逢生肖年就疯」）。本模块把它做成一张可热更新的规则表，两条触发口径：
+#   · 窗口类（日期彩头 / 生肖）—— 进入窗口即列出，事件本身即是信号；
+#   · 常驻类（字辈 / 动物 / 代码）—— 平时不显示，只有当该字辈显著跑赢全市场
+#     （命中组均涨 − 全市场均涨 ≥ excess_min，且有大涨/涨停个股）时才报警，
+#     避免「天天都有字辈涨停」把雷达刷成白噪音。
+# 规则表是纯数据结构（SPECIAL_STANDING / SPECIAL_DATES / SPECIAL_CODE），
+# 可随时增删；输出一律为「情绪观察提示」，不是买入建议。
+# ==================================================================
+
+# 农历春节 → 属相（边界＝春节当日，春节后进入新属相）。用于生肖概念的年份判定。
+SPRING_FESTIVAL = [
+    ("2020-01-25", "鼠"), ("2021-02-12", "牛"), ("2022-02-01", "虎"), ("2023-01-22", "兔"),
+    ("2024-02-10", "龙"), ("2025-01-29", "蛇"), ("2026-02-17", "马"), ("2027-02-06", "羊"),
+    ("2028-01-26", "猴"), ("2029-02-13", "鸡"), ("2030-02-03", "狗"), ("2031-01-23", "猪"),
+    ("2032-02-11", "鼠"), ("2033-01-31", "牛"), ("2034-02-19", "虎"), ("2035-02-08", "兔"),
+    ("2036-01-28", "龙"), ("2037-02-15", "蛇"), ("2038-02-04", "马"), ("2039-01-24", "羊"),
+    ("2040-02-12", "猴"),
+]
+
+# 生肖 → 名称命中字（正字 + 市面公认的谐音字）。举一反三时只需改这里。
+ZODIAC_HOMOPHONE = {
+    "鼠": ["鼠", "蜀"],
+    "牛": ["牛", "犇"],
+    "虎": ["虎", "琥"],
+    "兔": ["兔"],
+    "龙": ["龙", "珑", "辰"],
+    "蛇": ["蛇"],
+    "马": ["马", "玛", "码"],
+    "羊": ["羊", "洋", "扬", "阳"],
+    "猴": ["猴"],
+    "鸡": ["鸡", "吉"],
+    "狗": ["狗"],
+    "猪": ["猪", "珠", "朱"],
+}
+
+# 生肖 → 一句民俗背景（写进报告，说明为什么是这几个字）
+ZODIAC_LORE = {
+    "鼠": "A 股无「鼠」字标的，靠「蜀」等近音扩圈，生肖行情里最弱的一年",
+    "牛": "「牛来」谐音「牛市来」——中信证券点名过的集体许愿梗（罗牛山、金牛化工）",
+    "虎": "「虎」字标的稀缺，靠「琥」等近音扩圈",
+    "兔": "2023 兔年兔宝宝涨近 300%，三个月后跌回起点（最经典的生肖记忆）",
+    "龙": "「名字带龙就涨」——生肖＋图腾双重加持，龙字辈数量最多、最易扩圈",
+    "蛇": "A 股几乎无「蛇」字标的，多数年份无行情",
+    "马": "「马到成功」；马年主线，靠「玛/码」同音扩圈（福龙马、万里马、马矿股份）",
+    "羊": "「三羊开泰」；丁未水羊年，带水旁的「洋」五行最贴，阳＝羊（三羊马、水羊股份、澳洋健康）",
+    "猴": "「猴」字标的极少，靠「侯」字扩圈",
+    "鸡": "「鸡」字标的极少，靠「吉」谐音扩圈",
+    "狗": "A 股无「狗」字标的，多数年份无行情",
+    "猪": "「珠/朱/株」谐音扩圈，猪周期与名字双驱动",
+}
+
+# ---- 常驻字辈（平时隐藏，显著跑赢全市场才报警）----
+SPECIAL_STANDING = [
+    {"id": "hua", "概念": "华字辈（中华概念）", "字符": ["华"],
+     "依据": "「华」＝中华/华夏，重大纪念日与民族情绪节点最易被选作情绪载体"
+             "（2026-09-18 华软科技、华天科技、华鑫股份、华瓷股份等集体涨停）"},
+    {"id": "zhong", "概念": "中字辈（中字头/中国）", "字符": ["中"],
+     "依据": "「中」字头多为央企国企，兼具「中」的彩头与中特估逻辑"},
+    {"id": "guo", "概念": "国字辈（国字号）", "字符": ["国"],
+     "依据": "「国」＝家国叙事，国资/央企标签，纪念日窗口外也常独立异动"},
+    {"id": "dongfang", "概念": "东方系", "字符": ["东方"],
+     "依据": "「东方」= 太阳升起的方向，吉祥地名/名称字辈，历史上多次集体异动"},
+    {"id": "zhaocai", "概念": "招财字辈（发/财/金/鑫/银/富）", "字符": ["发", "财", "金", "鑫", "银", "富"],
+     "依据": "纯彩头字辈：名字里带「发/财/金/鑫」天然讨喜，游资偏爱"},
+    {"id": "jiqing", "概念": "吉庆字辈（福/泰/吉/祥/旺）", "字符": ["福", "泰", "吉", "祥", "旺", "盛", "隆", "兴"],
+     "依据": "传统吉语字辈，弱势行情里常作为「讨彩头」的抱团方向"},
+    {"id": "shuzi", "概念": "数字字辈（三/五/七/九/百/千/万）", "字符": ["三", "五", "七", "八", "九", "百", "千", "万"],
+     "依据": "「麻将概念」一脉：数字本身就是彩头（三羊马、七匹狼、五洋自控、九阳股份）"},
+    {"id": "animal", "概念": "动物字辈（炒动物行情）",
+     "字符": ["龙", "马", "羊", "牛", "虎", "兔", "狼", "象", "鹿", "鹏", "凤", "麒麟",
+             "豹", "鹰", "鹤", "燕", "鱼", "猪", "蛇", "鸡", "狗", "鼠", "猫", "猴",
+             "骆驼", "鲸", "蜂"],
+     "依据": "A 股「传统保留节目」：名字带动物的个股每年都会集体冲板"
+             "（2026-09-18 大亚圣象、七匹狼、鹿山新材、福龙马等）"},
+]
+
+# ---- 代码玄学（尾号彩头）----
+SPECIAL_CODE = [
+    {"id": "lucky_code", "概念": "代码吉利（尾号 888/168/518/666/999/918）",
+     "代码尾": ["888", "168", "518", "666", "999", "918", "188", "198"],
+     "依据": "「代码吉利就炒」——尾号谐音（发发发 / 一路发 / 我要发 / 就要发）"},
+]
+
+# ---- 日期彩头（±window 天窗口内列出）----
+SPECIAL_DATES = [
+    {"id": "d0918", "日期": (9, 18), "概念": "9·18「就要发」×「中华」", "字符": ["华", "发"],
+     "依据": "9·18 谐音「就要发」，叠加九一八纪念日的民族情绪，"
+             "「华」字辈常被当日的「中华概念」情绪载体集体拉抬"},
+    {"id": "d1001", "日期": (10, 1), "概念": "国庆「国/庆/华」", "字符": ["国", "庆", "华"],
+     "依据": "国庆长假前后消费＋家国叙事双催化，名字带「国/庆/华」的标的易被点名"},
+    {"id": "d0701", "日期": (7, 1), "概念": "七一建党「党/国/华」", "字符": ["党", "国", "华"],
+     "依据": "建党纪念日的家国情绪窗口"},
+    {"id": "d0801", "日期": (8, 1), "概念": "八一建军「军/兵/武」", "字符": ["军", "兵", "武"],
+     "依据": "建军节的军工情绪窗口，名字带「军/兵」的标的常被顺带炒作"},
+    {"id": "d0903", "日期": (9, 3), "概念": "9·3 抗战胜利纪念「国/华/军」", "字符": ["国", "华", "军", "胜"],
+     "依据": "抗战胜利纪念日的家国情绪窗口"},
+    {"id": "d1213", "日期": (12, 13), "概念": "国家公祭日「国/华」", "字符": ["国", "华", "和平"],
+     "依据": "国家公祭日的家国情绪窗口，情绪强度弱于 9·18"},
+    {"id": "d0808", "日期": (8, 8), "概念": "8·8「发发」", "字符": ["发", "八"],
+     "依据": "双八谐音「发发」，彩头字辈的日子型催化"},
+    {"id": "d0101", "日期": (1, 1), "概念": "元旦「元/新」", "字符": ["元", "新"],
+     "依据": "跨年讨彩头，名字带「元/新」的标的易被选作新年情绪载体"},
+    {"id": "d0504", "日期": (5, 4), "概念": "五四青年节「青/年」", "字符": ["青", "年"],
+     "依据": "青年节的情绪窗口，命中面窄，多为彩头型短线"},
+    {"id": "d0910", "日期": (9, 10), "概念": "教师节「教/育/师」", "字符": ["教", "育", "师"],
+     "依据": "教师节的字辈彩头，常与教育板块政策共振"},
+    {"id": "d0520", "日期": (5, 20), "概念": "5·20「我爱你」", "字符": ["爱", "情", "心"],
+     "依据": "「520」＝我爱你的谐音彩头，婚庆/情感消费方向偶尔被带"},
+    {"id": "d0909", "日期": (9, 9), "概念": "9·9「久久」/重阳", "字符": ["九", "久", "阳"],
+     "依据": "九月九「久久」＋重阳节，九字辈与阳字辈的日子型催化"},
+]
+
+_SPOT_MEM: dict = {"ts": 0.0, "df": None, "src": ""}   # 全市场快照内存缓存（120s）
+
+# 腾讯行情 qt.gtimg.cn 字段下标（实测核验：华软科技 +10.10%／成交额 43249 万／换手 13.02）
+_TX_IDX = {"名称": 1, "代码": 2, "最新价": 3, "昨收": 4, "成交量": 6,
+           "涨跌额": 31, "涨跌幅": 32, "最高": 33, "最低": 34,
+           "成交额(万)": 37, "换手率": 38, "流通市值(亿)": 44, "总市值(亿)": 45,
+           "市净率": 46, "涨停价": 47, "跌停价": 48, "量比": 49}
+_BJ_PREFIX = ("43", "83", "87", "88", "92")   # 北交所代码段
+
+
+def _tx_symbol(code: str) -> str:
+    """6 位代码 → 腾讯行情前缀（sh/sz/bj）。北交所需先判，否则 920xxx 会被误判为沪市。"""
+    c = str(code).zfill(6)
+    if c.startswith(_BJ_PREFIX):
+        return "bj" + c
+    return ("sh" if c[0] in ("6", "9") else "sz") + c
+
+
+def _all_codes() -> dict:
+    """全市场 {6位代码: 简称}：交易所官方名表（含沪深，落盘缓存 7 天）
+    + 本地库 meta 表（补北交所）。两个源都拿不到时返回 {}。"""
+    out: dict = {}
+    try:
+        from .ticker import _name_map
+        out.update({str(k).zfill(6): str(v) for k, v in (_name_map() or {}).items()})
+    except Exception:  # noqa: BLE001 —— 名表失败不致命，下面还有本地库
+        pass
+    try:
+        import sqlite3
+        root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        p = _os.path.join(root, "data", "unified_data.db")
+        if _os.path.exists(p):
+            with sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=15) as con:
+                for c, n in con.execute("SELECT code, name FROM meta"):
+                    out.setdefault(str(c).zfill(6), str(n or ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return {k: v for k, v in out.items() if len(k) == 6 and k.isdigit()}
+
+
+def _tencent_spot(codes: list, batch: int = 800) -> pd.DataFrame:
+    """腾讯批量行情：800 只/请求，全市场约 7 个请求（实测 <2s，含科创/创业/北交所）。"""
+    import requests as _rq
+    rows = []
+    for i in range(0, len(codes), batch):
+        chunk = [_tx_symbol(c) for c in codes[i:i + batch]]
+        r = _rq.get("http://qt.gtimg.cn/q=" + ",".join(chunk),
+                    headers={"User-Agent": _UA}, timeout=15)
+        r.encoding = "gbk"
+        for line in r.text.split(";"):
+            line = line.strip()
+            if not line.startswith("v_") or '="' not in line:
+                continue
+            f = line.partition('="')[2].rstrip('"').split("~")
+            if len(f) <= max(_TX_IDX.values()):
+                continue
+            try:
+                vol = float(f[_TX_IDX["成交量"]] or 0)
+            except ValueError:
+                vol = 0.0
+            if vol <= 0:            # 停牌/无成交：不计入涨跌统计（否则会污染「命中/上涨」口径）
+                continue
+            rows.append({
+                "代码": str(f[_TX_IDX["代码"]]).zfill(6),
+                "名称": str(f[_TX_IDX["名称"]]).strip(),
+                "最新价": _f(f[_TX_IDX["最新价"]]),
+                "涨跌幅": _f(f[_TX_IDX["涨跌幅"]]),
+                "成交额": (_f(f[_TX_IDX["成交额(万)"]]) or 0) * 1e4,
+                "换手率": _f(f[_TX_IDX["换手率"]]),
+                "量比": _f(f[_TX_IDX["量比"]]),
+            })
+    return pd.DataFrame(rows)
+
+
+def _market_spot(notes: list) -> tuple:
+    """全市场快照（代码/名称/最新价/涨跌幅/成交额(元)/换手率/量比）。
+    主源＝腾讯批量行情；备源＝东财 stock_zh_a_spot_em（push2 被 WAF 封时自动跳过）；
+    末源＝core.sync 官方名表（只有名称、无行情，本模块会据此如实跳过）。
+    返回 (df | None, 数据源名)。"""
+    if _SPOT_MEM["df"] is not None and _time.time() - _SPOT_MEM["ts"] < 120:
+        return _SPOT_MEM["df"], _SPOT_MEM["src"]
+    df, src = None, ""
+    codes = _all_codes()
+    if len(codes) >= 1000:
+        try:
+            df = _tencent_spot(sorted(codes), batch=800)
+            if df is not None and not df.empty:
+                src = f"腾讯批量行情（{len(df)} 只有成交，含沪深京）"
+            else:
+                df = None
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"腾讯批量行情失败（{str(e)[:50]}），改用备用源")
+            df = None
+    if df is None:
+        try:
+            raw = _net_call(lambda: _ak().stock_zh_a_spot_em(), retries=2)
+            if raw is not None and not raw.empty and {"代码", "名称"} <= set(raw.columns):
+                keep = [c for c in ("代码", "名称", "最新价", "涨跌幅",
+                                    "成交额", "换手率", "量比") if c in raw.columns]
+                df = raw[keep].copy()
+                src = f"东财全市场快照（{len(df)} 只）"
+        except Exception as e:  # noqa: BLE001 —— WAF/代理抖动时降级，不中断整次预警
+            notes.append(f"东财全市场快照失败（{str(e)[:50]}），改用备用源")
+    if df is None:
+        try:
+            from ..core.sync import fetch_spot   # 惰性导入：避免模块级循环依赖
+            sp = fetch_spot()
+            if sp is not None and not sp.empty:
+                df = sp.rename(columns={"code": "代码", "name": "名称",
+                                        "price": "最新价", "change_pct": "涨跌幅"})
+                src = "备用名表（沪深京官方列表 / 新浪，无成交额与换手）"
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"备用快照亦不可用：{str(e)[:50]}")
+    if df is not None:
+        df = df.copy()
+        df["代码"] = df["代码"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("")
+        df["名称"] = df["名称"].astype(str).str.strip()
+        for col in ("最新价", "涨跌幅", "成交额", "换手率", "量比"):
+            df[col] = pd.to_numeric(df.get(col), errors="coerce")
+        df = df[df["代码"] != ""].reset_index(drop=True)
+        _SPOT_MEM.update(ts=_time.time(), df=df, src=src)
+    return df, src
+
+
+
+def _limit_pct(code: str, name: str) -> float:
+    """该股的涨停幅度阈值(%)：创业板/科创板 20、北交所 30、主板 ST 5、其余 10。"""
+    c = str(code or "")
+    if c.startswith(("300", "301", "302", "688", "689")):
+        return 20.0
+    if c.startswith(("43", "83", "87", "88", "92")):   # 北交所
+        return 30.0
+    return 5.0 if "ST" in str(name or "").upper() else 10.0
+
+
+_ZODIAC_ORDER = ["鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪"]
+
+
+def _zodiac_now(today: _dt.date) -> tuple:
+    """返回 (当前属相, 下一属相, 距下一个春节的天数, 下一个春节日期, 当前属相起始日)。
+
+    2020-2040 用逐年的精确春节表；表外按 12 年周期外推（春节日 ≈ 锚点 + n×365.2425 天，
+    误差 ±2 天，仅影响极远期年份的概念判定，不影响生肖本身）。"""
+    table = [(_dt.datetime.strptime(d, "%Y-%m-%d").date(), z) for d, z in SPRING_FESTIVAL]
+    if today < table[0][0] or today >= table[-1][0] + _dt.timedelta(days=400):
+        anchor = table[6][0]                       # 2026-02-17 = 马年
+        steps = today.year - anchor.year
+        cur_z = _ZODIAC_ORDER[(6 + steps) % 12]
+        start = _dt.date(today.year, anchor.month, anchor.day)
+        if start > today:
+            start = start.replace(year=start.year - 1)
+        nxt_start = _dt.date(start.year + 1, anchor.month, anchor.day)
+        nxt_z = _ZODIAC_ORDER[(_ZODIAC_ORDER.index(cur_z) + 1) % 12]
+        return cur_z, nxt_z, (nxt_start - today).days, nxt_start, start
+    cur = table[0]
+    for d, z in table:
+        if d <= today:
+            cur = (d, z)
+        else:
+            break
+    i = table.index(cur)
+    nxt = table[i + 1] if i + 1 < len(table) else \
+        (cur[0].replace(year=cur[0].year + 12), cur[1])   # 12 年一轮回
+    return cur[1], nxt[1], (nxt[0] - today).days, nxt[0], cur[0]
+
+
+
+def _special_rules(today: _dt.date, cfg: dict) -> list:
+    """按今天日期/生肖筛出本次生效的概念规则（含窗口依据文案）。"""
+    out: list = []
+    for r in SPECIAL_STANDING:
+        out.append({**r, "类型": "字辈", "窗口依据": "常驻（跑赢全市场才报警）"})
+    for r in SPECIAL_CODE:
+        out.append({**r, "类型": "代码", "窗口依据": "常驻（跑赢全市场才报警）"})
+    win = int(cfg.get("window", 3) or 3)
+    for r in SPECIAL_DATES:
+        mm, dd = r["日期"]
+        for year in (today.year - 1, today.year, today.year + 1):
+            try:
+                ed = _dt.date(year, mm, dd)
+            except ValueError:
+                continue
+            delta = (ed - today).days
+            if abs(delta) <= win:
+                when = "今日" if delta == 0 else (f"还有 {delta} 天" if delta > 0 else f"已过 {-delta} 天")
+                out.append({**r, "类型": "日期彩头",
+                            "窗口依据": f"{ed.strftime('%Y-%m-%d')}（{when}）"})
+                break
+    cur_z, nxt_z, days_next, next_date, cur_start = _zodiac_now(today)
+    out.append({"id": f"zodiac_{cur_z}", "概念": f"{cur_z}字辈（当前生肖年）",
+                "字符": list(ZODIAC_HOMOPHONE.get(cur_z, [cur_z])), "类型": "生肖",
+                "窗口依据": f"{cur_z}年（{cur_start.strftime('%Y-%m-%d')} 春节起）",
+                "依据": ZODIAC_LORE.get(cur_z, "")})
+    lead = int(cfg.get("zodiac_lead_days", 150) or 150)
+    if days_next <= lead:
+        out.append({"id": f"zodiac_{nxt_z}", "概念": f"{nxt_z}字辈（{nxt_z}年·即将到来）",
+                    "字符": list(ZODIAC_HOMOPHONE.get(nxt_z, [nxt_z])), "类型": "生肖",
+                    "窗口依据": f"{nxt_z}年春节 {next_date.strftime('%Y-%m-%d')}（还有 {days_next} 天）",
+                    "依据": ZODIAC_LORE.get(nxt_z, "")})
+    return out
+
+
+def _rule_mask(df: pd.DataFrame, rule: dict) -> pd.Series:
+    """规则 → 名称/代码命中掩码。"""
+    m = pd.Series(False, index=df.index)
+    for ch in (rule.get("字符") or []):
+        m |= df["名称"].str.contains(ch, regex=False, na=False)
+    for tail in (rule.get("代码尾") or []):
+        m |= df["代码"].str.endswith(str(tail))
+    return m
+
+
+def _special_scan(c: dict, notes: list) -> dict:
+    """特殊概念扫描：全市场名称/代码匹配 → 概念内涨幅结构 vs 全市场基准。"""
+    cfg = c["special"]
+    today = _dt.date.today()
+    empty = {"date": today.strftime("%Y-%m-%d"), "src": "", "concepts": [], "stocks": [],
+             "zodiac": {}, "market_avg": None}
+    spot, src = _market_spot(notes)
+    if spot is None or spot.empty:
+        notes.append("全市场快照不可用，特殊概念已跳过")
+        return empty
+
+    df = spot.rename(columns={"涨跌幅": "涨跌幅%", "换手率": "换手率%"}).copy()
+    if "涨跌幅%" not in df.columns or df["涨跌幅%"].notna().sum() == 0:
+        notes.append("快照缺涨跌幅字段（降级源无行情），特殊概念已跳过")
+        return {**empty, "src": src}
+    df["成交额(亿)"] = pd.to_numeric(df.get("成交额"), errors="coerce") / 1e8
+    df["涨停"] = [bool(p >= _limit_pct(cc, nn) - 0.2)
+                 for p, cc, nn in zip(df["涨跌幅%"].fillna(-99), df["代码"], df["名称"])]
+    valid = df[df["涨跌幅%"].notna()]
+    mkt_avg = float(valid["涨跌幅%"].mean()) if len(valid) else 0.0
+    mkt_lu = float(valid["涨停"].mean() * 100) if len(valid) else 0.0   # 全市场涨停率(%)
+
+    surge = float(cfg.get("surge_pct", 5.0) or 5.0)
+    min_hits = int(cfg.get("min_hits", 5) or 5)
+    top_n = int(cfg.get("top_n", 15) or 15)
+    excess_min = float(cfg.get("excess_min", 1.5) or 1.5)
+    surge_n_min = int(cfg.get("surge_n_min", 3) or 3)
+    lu_min = int(cfg.get("limitup_min", 2) or 2)
+    lu_ratio_min = float(cfg.get("limitup_ratio_min", 2.0) or 2.0)
+    standing_n = int(cfg.get("standing_top_n", 3) or 0)
+
+    concepts, stocks, observed = [], [], []
+    for rule in _special_rules(today, cfg):
+        g = df[_rule_mask(df, rule)]
+        hit = int(len(g))
+        if hit < min_hits:
+            continue
+        gv = g[g["涨跌幅%"].notna()]
+        if not len(gv):
+            continue
+        n_up = int((gv["涨跌幅%"] > 0).sum())
+        n_lu = int(gv["涨停"].sum())
+        n_surge = int((gv["涨跌幅%"] >= surge).sum())
+        avg = float(gv["涨跌幅%"].mean())
+        excess = avg - mkt_avg
+        lu_pct = n_lu / len(gv) * 100
+        lu_ratio = (lu_pct / mkt_lu) if mkt_lu > 0 else 0.0
+        is_window = rule["类型"] in ("日期彩头", "生肖")
+        # 触发①：整体跑赢全市场 且 有大涨/涨停；触发②：涨停密度显著高于全市场（批量冲板）
+        gate_a = excess >= excess_min and (n_lu >= 1 or n_surge >= surge_n_min)
+        gate_b = n_lu >= lu_min and lu_ratio >= lu_ratio_min
+        active = is_window or gate_a or gate_b
+        lead = gv.sort_values("涨跌幅%", ascending=False).iloc[0]
+        row = {
+            "概念": rule["概念"], "类型": rule["类型"], "窗口依据": rule["窗口依据"],
+            "命中": hit, "上涨": n_up, "涨停": n_lu, "大涨": n_surge,
+            "涨停%": _r(lu_pct, 2), "均涨幅%": _r(avg, 2), "超额%": _r(excess, 2),
+            "最强": f"{lead['名称']} {_r(lead['涨跌幅%'], 2)}%",
+            "触发": bool(active),
+            "判定": ("窗口内 · 触发" if is_window else
+                     ("批量冲板 %.1f× 触发" % lu_ratio) if gate_b else
+                     ("跑赢全市场 %.1f 触发" % excess) if gate_a else "观察（未达阈值）"),
+            "依据": rule.get("依据", ""),
+        }
+        if active:
+            concepts.append(row)
+            top = gv.sort_values("涨跌幅%", ascending=False)
+            for _, r in top[top["涨跌幅%"] > 0].head(top_n).iterrows():
+                stocks.append({
+                    "概念": rule["概念"], "代码": r["代码"], "简称": r["名称"],
+                    "涨跌幅%": _r(r["涨跌幅%"], 2), "最新价": _r(r["最新价"], 2),
+                    "成交额(亿)": _r(r["成交额(亿)"], 2), "换手率%": _r(r["换手率%"], 2),
+                    "量比": _r(r["量比"], 2),
+                    "涨停": "涨停" if r["涨停"] else "",
+                })
+        elif rule["类型"] in ("字辈", "代码"):
+            observed.append(row)
+    # 未触发的常驻字辈：只保留超额最高的 N 行作「观察」，让人看见今日最强的字辈是谁
+    if standing_n > 0:
+        observed.sort(key=lambda x: -(x["超额%"] or -999))
+        concepts.extend(observed[:standing_n])
+        if len(observed) > standing_n:
+            notes.append("特殊概念·其余字辈本次未列示：" + "、".join(
+                f"{o['概念']} {o['超额%']:+.2f}" for o in observed[standing_n:]))
+    # 报警的排前面（触发 > 观察），组内按涨停数、再看超额
+    concepts.sort(key=lambda x: (not x.get("触发"), -x["涨停"], -(x["超额%"] or -999)))
+    if len(stocks) > 200:   # 明细总量闸门，避免前端口径过载
+        stocks = sorted(stocks, key=lambda s: -(s["涨跌幅%"] or 0))[:200]
+    if not concepts:
+        notes.append(f"特殊概念：本次窗口内无概念达到展示门槛（命中≥{min_hits}）")
+    cur_z, nxt_z, days_next, next_date, cur_start = _zodiac_now(today)
+    return {"date": today.strftime("%Y-%m-%d"), "src": src, "concepts": concepts,
+            "stocks": stocks, "market_avg": _r(mkt_avg, 2), "surge": surge,
+            "market_lu%": _r(mkt_lu, 2),
+            "zodiac": {"当前": cur_z, "下一": nxt_z, "距春节(天)": days_next,
+                       "春节日期": next_date.strftime("%Y-%m-%d")}}
+
+
+
+# ==================================================================
 # 四、信号合成（埋伏 / 逃离 / 趋势 三类）
 # ==================================================================
 def _synthesize(out: dict) -> list:
@@ -818,6 +1262,15 @@ def _synthesize(out: dict) -> list:
             sig.append({"类型": "趋势", "对象": f"{ch['板块']}（上游）",
                         "依据": f"上游 5 日涨 {ch['5日涨幅%']}%，向中游传导（{mid}）",
                         "动作": "关注中游补涨与业绩兑现时滞", "时效": "1-3 个月"})
+    # 特殊概念（名字玄学）：仅「触发」的概念成信号，「观察」行不入信号
+    sp = out.get("special") or {}
+    mkt = sp.get("market_avg")
+    for s in [c for c in (sp.get("concepts") or []) if c.get("触发")][:12]:
+        sig.append({"类型": "概念", "对象": s["概念"],
+                    "依据": f"{s['窗口依据']} · 命中 {s['命中']} 只（上涨 {s['上涨']}、涨停 {s['涨停']}），"
+                            f"均涨幅 {s['均涨幅%']}% vs 全市场 {mkt}%（超额 {s['超额%']} 个百分点）· 最强 {s['最强']}",
+                    "动作": "纯情绪题材：只做辨识度最高的龙头，追高极易接力站岗",
+                    "时效": "1-5 天（来得快、去得快）"})
     return sig
 
 
@@ -837,7 +1290,7 @@ def scan(cfg=None, sections=None, progress_cb: ProgressCb = None,
            "sections": sections, "notes": notes,
            "calendar": None, "stealth": [], "selling": [], "cold": [],
            "national": [], "foreign": [], "crowding": [],
-           "chains": [], "macro": [], "signals": [], "elapsed": 0.0}
+           "chains": [], "macro": [], "special": None, "signals": [], "elapsed": 0.0}
 
     def prog(a, b, msg):
         if progress_cb:
@@ -933,6 +1386,12 @@ def scan(cfg=None, sections=None, progress_cb: ProgressCb = None,
         out["macro"] = sig_rows
         step += 1
 
+    # --- 特殊概念（名字玄学 / 谐音梗 / 生肖字辈；独立于板块链路） ---
+    if "special" in sections:
+        prog(step, total_steps, "特殊概念扫描（名字玄学/生肖字辈）…")
+        out["special"] = _special_scan(c, notes)
+        step += 1
+
     # --- 信号合成（永远执行，基于已采集模块） ---
     prog(total_steps, total_steps, "信号合成…")
     out["signals"] = _synthesize(out)
@@ -1002,12 +1461,12 @@ _CSS = """
   .sig { padding:10px 12px; margin:7px 0; background:var(--card2); border-radius:10px;
          border-left:3px solid var(--line); font-size:13px; line-height:1.6; }
   .sig.b { border-left-color:var(--red); } .sig.s { border-left-color:var(--amber); }
-  .sig.t { border-left-color:var(--blue); }
+  .sig.t { border-left-color:var(--blue); } .sig.c { border-left-color:#a970ff; }
   .sig small { color:var(--mut); display:block; margin-top:3px; }
   .tag { display:inline-block; font-size:11px; padding:1.5px 9px; border-radius:999px;
          margin-right:8px; vertical-align:1px; }
   .tag.b{background:#3a2020;color:#ff9b8a} .tag.s{background:#3a3120;color:var(--amber)}
-  .tag.t{background:#1c2f45;color:#7db5ff}
+  .tag.t{background:#1c2f45;color:#7db5ff} .tag.c{background:#2a2140;color:#c0a2ff}
   .ttl { display:inline-block; font-size:11px; padding:1px 8px; border-radius:6px;
          margin-left:8px; background:#182130; color:var(--mut); }
   .notes { margin-top:16px; padding:12px 16px; border:1px dashed #4a3b1e;
@@ -1066,7 +1525,7 @@ def _table(headers, rows, pct_cols=(), wide_cols=()):
 
 def _sig_item(s: dict) -> str:
     t = s.get("类型")
-    k = "b" if t == "埋伏" else ("s" if t == "逃离" else "t")
+    k = "b" if t == "埋伏" else ("s" if t == "逃离" else ("c" if t == "概念" else "t"))
     return (f"<div class='sig {k}'><span class='tag {k}'>{_esc(t)}</span>"
             f"<b>{_esc(s.get('对象'))}</b> — {_esc(s.get('动作'))}"
             f"<span class='ttl'>时效：{_esc(s.get('时效'))}</span>"
@@ -1092,6 +1551,7 @@ def build_report_html(result: dict, cfg: Optional[dict] = None) -> str:
             ("冷门板块", "cold", has("cold")), ("国家队", "national", has("national")),
             ("外资重仓", "foreign", has("foreign")), ("拥挤度", "crowding", has("crowding")),
             ("传导链", "chains", has("chains")), ("宏观雷达", "macro", has("chains")),
+            ("特殊概念", "special", has("special")),
             ("参数附录", "params", True)]
     rail_html = "".join(f"<a href='#{i}'>{t}</a>" for t, i, ok in rail if ok)
 
@@ -1116,7 +1576,7 @@ def build_report_html(result: dict, cfg: Optional[dict] = None) -> str:
         f"<div class='stat gold'><div class='n'>{len(sigs)}</div><div class='l'>核心信号</div></div>",
         f"<div class='stat red'><div class='n'>{n_b}</div><div class='l'>埋伏</div></div>",
         f"<div class='stat amber'><div class='n'>{n_s}</div><div class='l'>逃离</div></div>",
-        f"<div class='stat blue'><div class='n'>{n_t}</div><div class='l'>趋势</div></div>",
+        f"<div class='stat blue'><div class='n'>{n_t}</div><div class='l'>趋势 / 概念</div></div>",
         "</div>",
         f"<nav class='rail'>{rail_html}</nav>",
         "<div class='grid'>",
@@ -1201,6 +1661,38 @@ def build_report_html(result: dict, cfg: Optional[dict] = None) -> str:
         parts.append("<div class='card wide' id='macro'><h2>🧭 宏观雷达<small>主题归类扫描 + 方向信号（纯新闻驱动 · 无回波不显示 · 非利率预测）</small></h2>"
                      + (f"<div style='margin:0 0 8px;font-size:12px;color:#d8c9a3'>🧭 {_esc(narr)}</div>" if narr else "")
                      + _table(["类型", "主题/信号", "细节", "方向", "应对"], mrows, wide_cols=(2, 4)) + "</div>")
+
+    if has("special"):
+        sp = res.get("special") or {}
+        zoo = sp.get("zodiac") or {}
+        head = (f"数据源：{sp.get('src') or '—'} · 全市场均涨 {sp.get('market_avg')}%"
+                f"、涨停率 {sp.get('market_lu%')}%"
+                if sp.get("src") else "数据源不可用")
+        if zoo:
+            head += (f" · 当前生肖 {zoo.get('当前')}年，下一生肖 {zoo.get('下一')}年"
+                     f"（春节 {zoo.get('春节日期')}，还有 {zoo.get('距春节(天)')} 天）")
+        surge_hdr = f"大涨(≥{(sp.get('surge') or 5):g}%)"
+        crows = [[c["概念"], c["窗口依据"], c["命中"], c["上涨"], c["涨停"], c["大涨"],
+                  c["均涨幅%"], c["超额%"], c["最强"], c["判定"]]
+                 for c in (sp.get("concepts") or [])]
+        srows = [[s["概念"], s["代码"], s["简称"], s["涨跌幅%"], s["最新价"],
+                  s["成交额(亿)"], s["换手率%"], s["量比"], s["涨停"]]
+                 for s in (sp.get("stocks") or [])]
+        lore = "".join(f"<div style='margin:2px 0'><b>{_esc(c['概念'])}</b>：{_esc(c['依据'])}</div>"
+                       for c in (sp.get("concepts") or []) if c.get("依据") and c.get("触发"))
+        parts.append("<div class='card wide' id='special'><h2>🎋 特殊概念"
+                     "<small>名字玄学 / 谐音梗 / 生肖字辈 · 窗口内列出 + 字辈跑赢全市场/批量涨停才报警 · 纯情绪题材</small></h2>"
+                     + f"<div style='margin:0 0 8px;font-size:12px;color:#d8c9a3'>{_esc(head)}</div>"
+                     + _table(["概念", "窗口/依据", "命中", "上涨", "涨停", surge_hdr,
+                               "均涨幅%", "超额%", "最强", "判定"],
+                              crows, pct_cols=(6, 7), wide_cols=(0, 1))
+                     + ("<div style='margin:12px 0 6px;font-weight:700;color:#d8c9a3'>"
+                        f"📈 命中个股明细（按涨幅降序，共 {len(srows)} 条）</div>"
+                        + _table(["概念", "代码", "简称", "涨跌幅%", "最新价", "成交额(亿)",
+                                  "换手率%", "量比", "状态"], srows, pct_cols=(3,))
+                        if srows else "")
+                     + (f"<div class='muted' style='margin-top:12px;line-height:1.8'>{lore}</div>" if lore else "")
+                     + "</div>")
 
     # 参数附录（本次运行生效的阈值）
     eff = _merge_cfg(cfg)

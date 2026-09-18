@@ -1676,14 +1676,20 @@ def sync_all(
 
 
 def start_sync_thread(exchange, sectors, kinds, force=False, max_workers=12):
-    """后台启动一次同步任务。"""
+    """后台启动一次同步任务。
+
+    用 daemon=False：主进程退出时要等同步跑完再退，避免「关窗口 = 同步
+    被拦腰砍断」导致数据写一半、下次又要全量重跑。uvicorn 正常退出
+    （Ctrl+C）时线程仍会跑完当前一轮。
+    """
     if STATE.status == "running":
         return False
     t = threading.Thread(
         target=sync_all,
         args=(exchange, sectors, kinds),
         kwargs={"force": force, "max_workers": max_workers},
-        daemon=True,
+        daemon=False,
+        name="sync-all",
     )
     t.start()
     return True

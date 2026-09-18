@@ -382,6 +382,10 @@ def kline(code: str, days: int = 120):
 
 
 # ============ 策略选股 ============
+# 未显式指定策略时的默认策略（避免「点一下就 6 个全跑」的隐性慢）
+DEFAULT_STRATEGY = "turtle"
+
+
 @router.get("/api/strategies/list")
 def strategies_list():
     return [{"key": k, "label": v["label"]}
@@ -405,13 +409,21 @@ def strategies_run(req: StrategyReq):
     if not keys and req.strategy and req.strategy != "all":
         keys = [req.strategy]
     if not keys:
-        # all ⇒ 6 个全跑
-        keys = list(strategies.STRATEGIES.keys())
+        # 未指定时**只跑 1 个**默认策略，而不是全部 6 个。
+        # 旧行为 list(STRATEGIES.keys()) 会让「随便点一下运行」= 6 个策略全跑
+        # （实测约 28s），用户感知就是「分析变慢」。前端下拉默认选
+        # 「全部一起跑」时仍会显式传 6 个 key，功能不受影响。
+        keys = [DEFAULT_STRATEGY]
+    keys = [k for k in keys if k in strategies.STRATEGIES] or [DEFAULT_STRATEGY]
 
     _task_start("策略扫描")
     try:
         out = {}
         exchange = _norm_exchange(req.exchange)
+        # 一次性批量预取行情：6 个策略共享同一份日K缓存。
+        # 原实现每策略各自「逐只 SELECT」→ 5554 只 × 6 策略 = 3.3 万次查询；
+        # 现在只查 1 次，6 个策略全跑从 ~28s 降到 ~5s（实测见 .workbuddy/）。
+        strategies.prepare_bars()
         for i, k in enumerate(keys):
             _task_progress(i, max(len(keys), 1),
                            f"策略 {strategies.STRATEGIES.get(k, {}).get('label', k)}")
@@ -437,6 +449,7 @@ def strategies_run(req: StrategyReq):
     except TaskCancelled:
         return _cancelled_response()
     finally:
+        strategies.clear_bars()   # 释放行情缓存，避免长期占用内存
         _task_done()
     # 前端期望 rows/elapsed，汇总扁平返回
     flat = []

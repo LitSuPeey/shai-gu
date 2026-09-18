@@ -518,15 +518,62 @@ def _worker_index_monthly() -> Optional[pd.DataFrame]:
     return _INDEX_M
 
 
+# ---- 全库批量缓存（消除逐只 SELECT 的 IO 放大）----
+# 旧实现：5500 只 × 逐只 SELECT → 实测 89s 纯 IO；批量后一次全扫约 25-35s。
+# worker 进程各自持有一份（各进程独立内存），由 _ensure_hist_cache 惰性加载。
+_HIST_CACHE: dict = {}
+_HIST_CACHE_READY = False
+
+
+def _ensure_hist_cache() -> None:
+    """把 hist.db 全部日K 一次读进内存并按 code 切分（进程内只做一次）。"""
+    global _HIST_CACHE_READY
+    if _HIST_CACHE_READY:
+        return
+    from ..core import batchload
+    m = batchload.load_hist_map()
+    if m:
+        _HIST_CACHE.update(m)
+    _HIST_CACHE_READY = True
+
+
+def clear_hist_cache() -> None:
+    global _HIST_CACHE_READY
+    _HIST_CACHE.clear()
+    _HIST_CACHE_READY = False
+
+
 def _load_hist(code: str) -> Optional[pd.DataFrame]:
-    conn = _ro_conn()
-    df = pd.read_sql_query(
-        "SELECT date, open, high, low, close, volume, amount FROM daily_hist "
-        "WHERE code=? ORDER BY date", conn, params=(str(code),))
-    if df.empty:
-        return None
-    df["date"] = pd.to_datetime(df["date"])
-    return df
+    """取单只股票全历史日K。优先走批量缓存（一次取回全库，按 code 切分）。
+
+    原实现逐只 SELECT：实测 300 只 4.86s → 全市场 5500 只约 89s 纯 IO。
+    批量后第一步只需一次全表扫描（约 25-35s），后续每只命中内存。
+
+    返回：date 为 datetime，按日期升序，
+    列 = date/open/high/low/close/volume/amount（与旧实现一致）。
+    """
+    c = str(code)
+    df = _HIST_CACHE.get(c)
+    if df is not None:
+        return df if not df.empty else None
+    if _HIST_CACHE_READY:
+        return None            # 已全量加载过，确实没有这只
+    try:
+        _ensure_hist_cache()
+    except Exception:
+        pass
+    df = _HIST_CACHE.get(c)
+    if df is None:
+        # 批量加载失败 → 退回逐只查询，保证功能不退化
+        conn = _ro_conn()
+        df = pd.read_sql_query(
+            "SELECT date, open, high, low, close, volume, amount FROM daily_hist "
+            "WHERE code=? ORDER BY date", conn, params=(c,))
+        if df.empty:
+            return None
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    return df if not df.empty else None
 
 
 def _ant1000_worker(code: str, name: str, sector: str, years: int, cfg: dict,

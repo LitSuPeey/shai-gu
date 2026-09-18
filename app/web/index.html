@@ -397,7 +397,7 @@
   <section class="panel" id="tab-alert">
     <div class="panel-head">
       <h2>前瞻预警</h2>
-      <p>以「提前量」为核心的预警系统：日历预热 · 异动侦测 · 冷门板块 · 国家队资金 · 外资重仓 · 拥挤度监控 · 传导链雷达——四重领先机制拒绝马后炮。</p>
+      <p>以「提前量」为核心的预警系统：日历预热 · 异动侦测 · 冷门板块 · 国家队资金 · 外资重仓 · 拥挤度监控 · 传导链雷达 · 特殊概念（名字玄学/生肖字辈）——四重领先机制拒绝马后炮。</p>
     </div>
     <div class="controls">
       <label class="inline"><input type="checkbox" id="alertSecCalendar" checked /> 日历预警</label>
@@ -413,6 +413,7 @@
       <label class="inline"><input type="checkbox" id="alertSecForeign" checked /> 外资重仓</label>
       <label class="inline"><input type="checkbox" id="alertSecCrowding" checked /> 拥挤度监控</label>
       <label class="inline"><input type="checkbox" id="alertSecChains" checked /> 传导链与宏观</label>
+      <label class="inline"><input type="checkbox" id="alertSecSpecial" checked /> 特殊概念</label>
     </div>
     <details class="adv-params">
       <summary>⚙ 预警参数（可调，默认即方案原版设计值）</summary>
@@ -434,6 +435,14 @@
         <label>拥挤·20日涨幅下限(%) <input type="number" id="aCrowdGain" value="15" min="5" max="60" step="1" /></label>
         <label>拥挤·触发项数(原版3) <input type="number" id="aCrowdTrigger" value="2" min="1" max="4" /></label>
         <label>外资·重仓Top N <input type="number" id="aForeignTopN" value="10" min="3" max="30" /></label>
+        <label>特殊概念·日期彩头窗口(±天) <input type="number" id="aSpecWindow" value="3" min="0" max="15" /></label>
+        <label>特殊概念·生肖提前天数 <input type="number" id="aSpecZodiacLead" value="150" min="0" max="400" /></label>
+        <label>特殊概念·最少命中(只) <input type="number" id="aSpecMinHits" value="5" min="1" max="50" /></label>
+        <label>特殊概念·明细只数 <input type="number" id="aSpecTopN" value="15" min="1" max="50" /></label>
+        <label>特殊概念·超额阈值(百分点) <input type="number" id="aSpecExcess" value="1.5" min="0" max="10" step="0.5" /></label>
+        <label>特殊概念·涨停密度倍数 <input type="number" id="aSpecLuRatio" value="2" min="1" max="10" step="0.5" /></label>
+        <label>特殊概念·大涨阈值(%) <input type="number" id="aSpecSurge" value="5" min="1" max="20" step="0.5" /></label>
+        <label>特殊概念·观察行数 <input type="number" id="aSpecObserve" value="3" min="0" max="10" /></label>
       </div>
     </details>
     <div class="actions">
@@ -480,6 +489,11 @@
       <div class="sim-block" id="macroOuterBlock" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="chains" title="点击选入/踢出该模块（同步上方勾选）">🧭 宏观雷达（新闻主题扫描 · 无回波不显示）</h3>
         <div class="hint" id="macroNarrative" style="margin-bottom:8px"></div>
         <div class="macro-grid" id="macroCards"></div></div>
+      <div class="sim-block" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">🎋 特殊概念（名字玄学 / 谐音梗 / 生肖字辈）</h3>
+        <div class="hint" id="specialHint" style="margin-bottom:6px"></div>
+        <table class="result-table small" id="alertSpecialTable"><thead></thead><tbody></tbody></table></div>
+      <div class="sim-block" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">📈 特殊概念 · 命中个股明细</h3>
+        <table class="result-table small" id="alertSpecialStockTable"><thead></thead><tbody></tbody></table></div>
     </div>
   </section>
 

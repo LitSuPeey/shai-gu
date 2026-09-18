@@ -1,25 +1,109 @@
 # -*- coding: utf-8 -*-
-"""6 大经典量化策略（来自 Sequoia-X，适配本项目统一数据库）。"""
+"""6 大经典量化策略（来自 Sequoia-X，适配本项目统一数据库）。
+
+性能说明
+========
+原实现「每只股票一次 pd.read_sql_query」→ 全市场 5554 只 = 5554 次查询，
+实测单策略 4-7s，6 个策略全跑约 28s。
+
+现改为**一次批量取回全市场日K**（app/core/batchload.py），内存按 code 切分后
+同一轮内所有策略共享，第 2-6 个策略的取数成本≈0。
+批量与逐只结果已逐行校验等价（见 .workbuddy/_batchload_verify.py）。
+"""
+from typing import Dict, Optional
+
 import pandas as pd
 
-from ..core import db
+from ..core import batchload, db
+
+# 同一轮策略扫描共享的行情缓存 {code: DataFrame}，避免各策略重复取数
+_BARS_CACHE: Dict[str, pd.DataFrame] = {}
+_BARS_WINDOW = 0
+
+
+def prepare_bars(codes=None, window: Optional[int] = None) -> None:
+    """预热批量行情缓存（供 routes 在跑多策略前调用一次）。
+
+    取 max(普通策略最大回看, RPS 所需 260) + 余量，这样 6 个策略
+    共用同一份缓存，只查一次库。
+    """
+    global _BARS_CACHE, _BARS_WINDOW
+    w = int(window or max(_MAX_LOOKBACK, _RPS_PREWARM))
+    # 留 10 个交易日余量：移位/均线需要更早的数据
+    m = batchload.load_daily_map(window_days=w + 10, codes=codes)
+    if m:
+        _BARS_CACHE = m
+        _BARS_WINDOW = w + 10
+
+
+def clear_bars() -> None:
+    global _BARS_CACHE, _BARS_WINDOW
+    _BARS_CACHE = {}
+    _BARS_WINDOW = 0
 
 
 def _bars(code: str, n: int = 0) -> pd.DataFrame:
-    rconn = db.reader()
-    sql = ("SELECT date, open, high, low, close, volume, amount, turnover "
-           "FROM daily WHERE code=? ORDER BY date")
+    """取单只股票日K（优先走批量缓存）。语义与逐只查询版完全一致：
+    列 = date/open/high/low/close/volume/amount/turnover，date 为 datetime，
+    按日期**升序**；n>0 时只保留最后 n 根。
+    """
+    c = str(code)
+    df = _BARS_CACHE.get(c)
+    if df is None:
+        # 缓存未预热（单策略直调等场景）→ 批量加载该 code
+        m = batchload.load_daily_map(window_days=_MAX_LOOKBACK + 10, codes=[c])
+        df = m.get(c)
+        if df is None:
+            df = pd.DataFrame()
+    if df.empty:
+        return df
     if n and n > 0:
-        sql = (f"SELECT * FROM (SELECT date, open, high, low, close, "
-               f"volume, amount, turnover FROM daily WHERE code=? "
-               f"ORDER BY date DESC LIMIT {int(n)}) ORDER BY date ASC")
-    df = pd.read_sql_query(sql, rconn, params=(str(code),))
-    if not df.empty:
-        df["date"] = pd.to_datetime(df["date"])
+        df = df.tail(int(n)).reset_index(drop=True)
     return df
 
 
+# 各策略所需的最大回看窗口（用于一次性预热）
+# turtle 25 / ma_vol 30 / flag 45 / shake 5 / limit_d 65 / RPS 需 240+（见 _RPS_PREWARM）
+_MAX_LOOKBACK = 65
+# RPS 是横截面策略：每只股票要 120 日回看 + 120 日滚动新高 → 取 260 根足够
+_RPS_PREWARM = 260
+
+
+def _rps_frame(code_list: list) -> pd.DataFrame:
+    """RPS 专用行情帧：优先复用批量缓存（含全市场），否则批量取一次。
+
+    返回 long 格式（code/date/close/high），date 为 datetime，
+    按 (code, date) 升序 —— 与旧实现 `IN (...) ORDER BY code, date` 等价。
+    """
+    need = set(map(str, code_list))
+    have = _BARS_CACHE
+    if have and need.issubset(have.keys()):
+        rows = []
+        for c in code_list:
+            g = have.get(str(c))
+            if g is None or g.empty:
+                continue
+            rows.append(g[["date", "close", "high"]].assign(code=str(c)))
+        if not rows:
+            return pd.DataFrame()
+        df = pd.concat(rows, ignore_index=True)
+    else:
+        m = batchload.load_daily_map(window_days=_RPS_PREWARM, codes=code_list)
+        rows = []
+        for c in code_list:
+            g = m.get(str(c))
+            if g is None or g.empty:
+                continue
+            rows.append(g[["date", "close", "high"]].assign(code=str(c)))
+        if not rows:
+            return pd.DataFrame()
+        df = pd.concat(rows, ignore_index=True)
+    df["code"] = df["code"].astype(str)
+    return df.sort_values(["code", "date"]).reset_index(drop=True)
+
+
 def _codes(exchange=None, sectors=None):
+
     """股票池（按范围过滤）。"""
     rconn = db.reader()
     sql = "SELECT code, name, sector FROM meta"
@@ -234,11 +318,8 @@ def rps_breakout(exchange=None, sectors=None,
         return []
     code_map = {str(c): (n, s) for c, n, s in code_rows}
     code_list = list(code_map.keys())
-    placeholders = ",".join("?" * len(code_list))
-    df = pd.read_sql_query(
-        f"SELECT code, date, close, high FROM daily "
-        f"WHERE code IN ({placeholders}) ORDER BY code, date",
-        rconn, params=tuple(code_list))
+    # RPS 需 120 日回看 + 120 日滚动新高 → 至少 240 交易日
+    df = _rps_frame(code_list)
     if df.empty:
         return []
     df["date"] = pd.to_datetime(df["date"])

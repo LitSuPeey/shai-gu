@@ -340,6 +340,9 @@ def _load_ctx(code, cfg, cache, lock, needs=None):
     rconn = db.reader()
     ctx = {}
     if "bars" in fields:
+        # 保持逐只索引查询：本模块只需 300 根，逐只 SELECT 走 idx_daily_code，
+        # 实测全市场 5554 只仅 3.18s；而批量取 300 交易日窗口有 ~4.3s 固定成本
+        # （扫全库再 groupby 切分），任何规模下都更慢 → 不做批量。
         bars = pd.read_sql_query(
             "SELECT date, open, high, low, close, volume, amount "
             "FROM daily WHERE code=? ORDER BY date DESC LIMIT ?",

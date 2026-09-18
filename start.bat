@@ -46,8 +46,11 @@ if %errorlevel%==0 (
 )
 
 rem ---------- launch server in a NEW independent window ----------
+rem Server runs run_server.bat: on crash the window STAYS OPEN so you can
+rem read the error; it also pauses on normal exit. This prevents the
+rem "cmd window vanished by itself and the app died" symptom.
 echo Starting server (new window), please wait...
-start "Screengu-Server" cmd /c "%PYEXE% -m uvicorn app.main:app --host 127.0.0.1 --port %PORT%"
+start "Screengu-Server" cmd /c "run_server.bat"
 
 rem ---------- wait until server is ready (max 40s) ----------
 set /a tries=0

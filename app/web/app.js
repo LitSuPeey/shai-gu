@@ -169,7 +169,7 @@ const thsLink = code => `https://stockpage.10jqka.com.cn/${code}/`;
 const state = { range: 'all', sectors: [], syncPoll: null, syncing: false };
 
 // ========= 表格渲染（动态列） =========
-const PCT_RE = /涨跌幅|幅度|涨跌|超额|收益|振幅|回撤|回报/i;
+const PCT_RE = /涨跌幅|涨幅|幅度|涨跌|超额|收益|振幅|回撤|回报/i;
 function renderTable(tableId, rows, opts = {}) {
   const t = $('#' + tableId);
   if (!t) return;
@@ -971,7 +971,8 @@ async function runAlert() {
   const sections = [];
   [['alertSecCalendar', 'calendar'], ['alertSecStealth', 'stealth'], ['alertSecCold', 'cold'],
    ['alertSecNational', 'national'], ['alertSecForeign', 'foreign'],
-   ['alertSecCrowding', 'crowding'], ['alertSecChains', 'chains']]
+   ['alertSecCrowding', 'crowding'], ['alertSecChains', 'chains'],
+   ['alertSecSpecial', 'special']]
     .forEach(([id, key]) => { const el = $('#' + id); if (el && el.checked) sections.push(key); });
   if (sections.length === 0) {
     showMeme('alertMeme', 'ask', '请至少勾选一个模块', '核心信号会基于勾选模块自动合成');
@@ -998,6 +999,10 @@ async function runAlert() {
                 gain20_min: num('#aCrowdGain', 15),
                 trigger_n: num('#aCrowdTrigger', 2) },
     foreign: { top_n: num('#aForeignTopN', 10) },
+    special: { window: num('#aSpecWindow', 3), zodiac_lead_days: num('#aSpecZodiacLead', 150),
+               min_hits: num('#aSpecMinHits', 5), top_n: num('#aSpecTopN', 15),
+               excess_min: num('#aSpecExcess', 1.5), limitup_ratio_min: num('#aSpecLuRatio', 2),
+               surge_pct: num('#aSpecSurge', 5), standing_top_n: num('#aSpecObserve', 3) },
   };
   showOverlay('loading', `前瞻预警扫描中（联网采集）…（${estText('alert', rangeVal())}）`, { cancellable: true });
   try {
@@ -1009,8 +1014,9 @@ async function runAlert() {
     renderAlert(data);
     const sig = (data.signals || []).length;
     const st = (data.stealth || []).length + (data.selling || []).length;
+    const spHit = ((data.special || {}).concepts || []).length;
     showMeme('alertMeme', sig > 0 || st > 0 ? 'success' : 'empty',
-      `核心信号 ${sig} 条 · 异动 ${st} 条 ⏰`,
+      `核心信号 ${sig} 条 · 异动 ${st} 条 · 特殊概念 ${spHit} 个 ⏰`,
       `耗时 ${data.elapsed || '—'}s；点击代码可站内查看 K 线`);
   } catch (e) {
     hideOverlay();
@@ -1059,6 +1065,30 @@ function renderAlert(data) {
   renderTable('alertForeignTable', data.foreign || [], { max: 50 });
   renderTable('alertCrowdingTable', data.crowding || [], { max: 100 });
   renderTable('alertChainTable', data.chains || [], { max: 100 });
+  // 特殊概念（名字玄学/谐音梗/生肖字辈）：概念总览 + 命中个股明细
+  const sp = data.special || {};
+  const spConcepts = sp.concepts || [];
+  const spStocks = sp.stocks || [];
+  const zoo = sp.zodiac || {};
+  const spHint = $('specialHint');
+  if (spHint) {
+    if (!data.special) spHint.textContent = '';               // 未勾选该模块
+    else if (!sp.src) spHint.textContent = '数据源不可用，本次未取得全市场行情';  // 勾了但没拿到
+    else spHint.textContent = `数据源：${sp.src} · 全市场均涨 ${sp.market_avg}%、`
+      + `涨停率 ${sp['market_lu%']}%`
+      + (zoo['当前'] ? ` · 当前生肖 ${zoo['当前']}年，下一生肖 ${zoo['下一']}年`
+        + `（春节 ${zoo['春节日期']}，还有 ${zoo['距春节(天)']} 天）` : '');
+  }
+  const surgeHdr = '大涨(≥' + (sp.surge != null ? sp.surge : 5) + '%)';
+  renderTable('alertSpecialTable', spConcepts.map(r => ({
+    '概念': r['概念'], '窗口/依据': r['窗口依据'],
+    '命中': r['命中'], '上涨': r['上涨'], '涨停': r['涨停'], [surgeHdr]: r['大涨'],
+    '均涨幅%': r['均涨幅%'], '超额%': r['超额%'],
+    '最强': r['最强'], '判定': r['判定'] })), { max: 50 });
+  renderTable('alertSpecialStockTable', spStocks.map(r => ({
+    '概念': r['概念'], '代码': r['代码'], '简称': r['简称'], '涨跌幅%': r['涨跌幅%'],
+    '最新价': r['最新价'], '成交额(亿)': r['成交额(亿)'], '换手率%': r['换手率%'],
+    '量比': r['量比'], '状态': r['涨停'] })), { max: 200 });
   $('#macroNarrative').textContent = data.macro_narrative || '';
   // 宏观雷达：横向卡片阵列（每主题/信号一卡，一行并排多卡）
   $('#macroCards').innerHTML = (data.macro || []).map(m => {
@@ -1084,6 +1114,8 @@ function renderAlert(data) {
     alertForeignTable: (data.foreign || []).length,
     alertCrowdingTable: (data.crowding || []).length,
     alertChainTable: (data.chains || []).length,
+    alertSpecialTable: spConcepts.length,
+    alertSpecialStockTable: spStocks.length,
   };
   const hiddenNames = [];
   $$('#tab-alert .sim-block').forEach(b => {
@@ -1111,7 +1143,8 @@ function renderAlert(data) {
 
 // ========= 前瞻预警：点击结果卡片标题 = 选入/踢出该模块（与上方勾选框联动） =========
 const SEC_CHECKBOX = { calendar: 'alertSecCalendar', stealth: 'alertSecStealth', cold: 'alertSecCold',
-  national: 'alertSecNational', foreign: 'alertSecForeign', crowding: 'alertSecCrowding', chains: 'alertSecChains' };
+  national: 'alertSecNational', foreign: 'alertSecForeign', crowding: 'alertSecCrowding',
+  chains: 'alertSecChains', special: 'alertSecSpecial' };
 function refreshSecToggleState() {
   $$('.sec-toggle').forEach(h => {
     const cb = $('#' + (SEC_CHECKBOX[h.dataset.sec] || ''));
