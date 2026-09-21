@@ -1229,6 +1229,12 @@ a.fut-news-title:hover { color: var(--accent-deep); text-decoration: underline; 
   border-bottom: 1px solid var(--line);
 }
 .r9-summary b { color: var(--accent-deep); font-family: var(--mono); }
+/* 口径/统计说明单独成行，避免与主行挤在一起 */
+.r9-summary .r9-sum-note {
+  display: block; margin-top: 2px;
+  font-size: 12px; color: var(--ink-faint); line-height: 1.9;
+}
+.r9-summary .r9-sum-note b { color: var(--ink-soft); }
 
 .r9-list { display: flex; flex-direction: column; }
 .r9-empty-big { text-align: center; padding: 36px 16px; color: var(--ink-faint); font-size: 13px; }

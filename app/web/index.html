@@ -294,7 +294,9 @@
         <strong>|n|、|m| 均 ≤ 5</strong>；n / m 为负表示拐点落在信号的另一侧（信号滞后或提前）。</p>
       <p class="src-note">指标口径：收盘价连续 9 天低于 / 高于 4 个交易日前收盘价 → 买入九转 / 卖出九转。
         反转须被<strong>拐点之后</strong>的行情确认（否则按「未确认」剔除），全程只用 t 时刻及之前的数据、不含未来函数。
-        <b>排序</b>：① 历史买入九转的平均 n 越小越靠前（只统计 n ≥ 0 的样本，避免信号越滞后排得越前）→ ② 一年内卖出九转信号越多越靠前。
+        <b>排序</b>：① 历史买入九转的<strong>排序分</strong>越小越靠前 → ② 一年内卖出九转信号越多越靠前。
+        排序分 = <code>(Σn + K×全市场均值) / (样本数 + K)</code>：只统计 n ≥ 0 的样本（n &lt; 0 属信号滞后，单列展示），
+        并按样本量向全市场均值收缩 —— 否则「只有 1 次记录恰好在信号日见底」的股票会以平均 n=0 霸榜，与「历史上<strong>每次</strong>」的语义不符。K 可调，设 0 即退回纯平均 n。
         实测：多数卖出九转的<strong>真顶落在信号之后</strong>，即它更像「提前预警」而不是滞后的见顶确认 —— 具体比例见扫描完的汇总条。</p>
     </div>
 
@@ -310,6 +312,7 @@
       <div class="adv-grid">
         <label>九转比较基准(日前) <input type="number" id="r9Gap" value="4" min="1" max="10" step="1" /></label>
         <label>匹配容差 |n|,|m| ≤ <input type="number" id="r9Win" value="5" min="1" max="10" step="1" /></label>
+        <label title="排序分 = (Σn + K×全市场均值)/(样本数 + K)；0 = 关闭收缩，退回纯平均 n">排序收缩强度 K <input type="number" id="r9ShrinkK" value="3" min="0" max="50" step="1" /></label>
         <label>反转确认幅度(%) <input type="number" id="r9ConfirmPct" value="3" min="0" max="50" step="0.5" /></label>
         <label>反转确认窗口(日) <input type="number" id="r9ConfirmBars" value="10" min="1" max="60" step="1" /></label>
         <label>历史回看(年) <input type="number" id="r9HistYears" value="5" min="1" max="25" step="1" /></label>

@@ -652,6 +652,7 @@ function r9Cfg() {
     include_triggered: $('#r9Triggered').checked,
     ref_gap: num('#r9Gap', 4),
     match_window: num('#r9Win', 5),
+    shrink_k: num('#r9ShrinkK', 3),
     confirm_pct: num('#r9ConfirmPct', 3),
     confirm_bars: num('#r9ConfirmBars', 10),
     hist_years: num('#r9HistYears', 5),
@@ -745,9 +746,9 @@ function r9Card(r, idx) {
       <a href="${thsLink(r.code)}" target="_blank" rel="noopener noreferrer" class="stock-link name-link r9-name" title="详细查询 · 同花顺新窗口">${escHtml(r.name || '')}</a>
       ${status}
       <span class="r9-metrics">
-        <span class="r9-metric" title="历史买入九转的平均 n（只统计 n≥0 的样本；越小越靠前）"><i>平均n</i><b>${na(r.n_mean)}</b></span>
-        <span class="r9-metric" title="历史买入九转的最小 n（同上，只看 n≥0）"><i>最小n</i><b>${na(r.n_min)}</b></span>
-        <span class="r9-metric" title="历史上「已确认」的买入九转条数（含信号滞后的负 n 样本）"><i>买入9转</i><b>${r.buy_n || 0}</b></span>
+        <span class="r9-metric" title="历史买入九转的平均 n（只统计 n≥0 的样本，n<0 属信号滞后不计入）"><i>平均n</i><b>${na(r.n_mean)}</b></span>
+        <span class="r9-metric" title="第 1 排序依据：排序分 = (Σn + K×全市场均值)/(样本数 + K)。样本少时会向全市场均值收缩，避免只有 1 次记录就以平均 n=0 霸榜"><i>排序分</i><b>${na(r.n_rank)}</b></span>
+        <span class="r9-metric" title="参与排序的 n≥0 样本数 / 全部买入九转条数（含 n<0 的滞后样本）"><i>n样本</i><b>${r.n_pos || 0}/${r.buy_n || 0}</b></span>
         <span class="r9-metric" title="最近一年内的卖出九转条数（第 2 排序依据）"><i>卖出9转/1年</i><b>${r.sell_1y || 0}</b></span>
         <span class="r9-metric" title="参与统计的历史K线根数"><i>K线数</i><b>${r.bars_hist || 0}</b></span>
       </span>
@@ -778,12 +779,16 @@ function renderR9(data) {
     : ` · 买入样本中 <b>${s.buy_lag_pct}%</b> 的真底落在信号<strong>之前</strong>（信号滞后）`;
   const sellTxt = (s.sell_top_after_pct == null) ? ''
     : ` · 卖出样本中 <b>${s.sell_top_after_pct}%</b> 的真顶落在信号<strong>之后</strong>（属提前预警）`;
+  const rankTxt = (s.shrink_k == null) ? ''
+    : ` · 排序分 = (Σn + ${s.shrink_k}×全市场均值 ${s.n_prior}) / (样本数 + ${s.shrink_k})`
+      + ((s.thin != null) ? `（${s.thin} 只只有 1 个样本，已被收缩拉回）` : '');
   if (sum) {
     sum.hidden = false;
     sum.innerHTML = `共 <b>${rows.length}</b> 只 · 数据截止 <b>${data.ref_date || '—'}</b>`
       + ` · 「即将」还差 ≤ <b>${p.near_remaining}</b> 天`
       + ` · |n|,|m| ≤ <b>${p.match_window}</b> · 历史回看 <b>${p.hist_years}</b> 年`
-      + ` · 用时 <b>${data.elapsed || 0}s</b>${lagTxt}${sellTxt}${skTxt}`;
+      + ` · 用时 <b>${data.elapsed || 0}s</b>`
+      + `<span class="r9-sum-note">${rankTxt}${lagTxt}${sellTxt}${skTxt}</span>`;
   }
   const shown = rows.slice(0, R9_RENDER_MAX);
   _r9Last = data;        // 明细懒渲染时按 data-idx 回查，必须先落好引用
@@ -870,15 +875,20 @@ function downloadR9Csv() {
   }
   const st = d.stats || {};
   const head = ['排名', '代码', '名称', '板块', '当前买入计数', '还差天数', '已达成',
-    '历史买入9转数', '平均n(仅n≥0)', '最小n', '买入样本中真底早于信号的条数',
+    '历史买入9转数', '平均n(仅n≥0)', '排序分', 'n≥0样本数',
+    '买入样本中真底早于信号的条数',
     '近一年卖出9转数', '历史卖出9转数', '卖出样本中真顶晚于信号的条数', 'K线数', '收盘'];
   const lines = d.results.map(r => [r.rank, r.code, r.name, r.sector, r.cur_count,
     r.triggered ? 0 : r.remain, r.triggered ? '是' : '',
-    r.buy_n || 0, r.n_mean == null ? '' : r.n_mean, r.n_min == null ? '' : r.n_min,
+    r.buy_n || 0, r.n_mean == null ? '' : r.n_mean,
+    r.n_rank == null ? '' : r.n_rank, r.n_pos || 0,
     r.n_lag || 0, r.sell_1y || 0, r.sell_n || 0, r.m_neg || 0,
     r.bars_hist || 0, r.close].map(csvCell).join(','));
   const meta = [
     ['口径', '数据截止', d.ref_date || '', '窗口', '|n|,|m| ≤ ' + ((d.params || {}).match_window || '')],
+    ['口径', '排序分公式', '(Σn + K×全市场均值) / (样本数 + K)，K=' + (st.shrink_k == null ? '' : st.shrink_k)
+      + '，全市场均值=' + (st.n_prior == null ? '' : st.n_prior) + '（只统计 n≥0 样本）'],
+    ['口径', '只有 1 个样本的只数', st.thin == null ? '' : st.thin],
     ['口径', '买入样本总数', st.buy_total == null ? '' : st.buy_total,
       '其中真底早于信号', st.buy_lag_pct == null ? '' : st.buy_lag_pct + '%'],
     ['口径', '卖出样本总数', st.sell_total == null ? '' : st.sell_total,

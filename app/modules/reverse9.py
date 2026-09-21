@@ -45,6 +45,11 @@ N=1 只留「还差 1 天」；N=3 放宽到「还差 3 天以内」。c=9（今
  1st 历史买入九转的 n 越小越靠前   → 主键 = **仅统计 n ≥ 0 样本**的平均 n 升序。
       （n < 0 表示信号发出时反弹已经开始、属滞后信号，混进均值会让
         「信号越滞后排得越前」，与用户意图相反，故单列展示、不计入主键。）
+      并对样本量做**收缩**：n_rank = (Σn + K×全市场均值) / (m + K)。
+      理由：用户说的是「历史上**每次** 9 转的 n 越小越靠前」，而实测首版 Top-1
+      只靠 **1 个** n=0 样本就以 mean=0 霸榜（全量 413 只里有 21 只样本数 ≤1），
+      单点样本谈不上「每次」。收缩后样本多的股票胜出，样本少的被拉回全市场均值。
+      K = `shrink_k`（默认 3，可调；设 0 即退回纯平均 n 的字面口径）。
  2nd 一年内卖出九转信号越多越靠前   → 次键 = 近一年卖出九转条数降序
  3rd 代码升序（仅作稳定收尾）
 
@@ -95,6 +100,12 @@ DEFAULTS = {
     # —— 输出控制 ——
     "max_results": 600,         # 最多返回多少只
     "show_records": 40,         # 每只股票每侧最多回传多少条历史明细
+    # —— 排序 ——
+    # 用户规则「历史上每次 9 转的 n 越小越靠前」隐含要求有足够的历史样本。
+    # 实测首版 Top-1 只靠 1 个 n=0 样本就以 mean=0 霸榜，与「每次」的语义不符，
+    # 故对样本量做收缩：n_rank = (Σn + K×全市场均值) / (m + K)。
+    # K=0 即退回「纯平均 n」（完全照字面口径）；K 越大越保守。
+    "shrink_k": 3.0,
 }
 
 # 说明文案（供 /api/r9/meta 与前端 tooltip 复用）
@@ -435,6 +446,7 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
     c["hist_years"] = float(max(0.5, min(25.0, float(c["hist_years"]))))
     c["show_records"] = int(max(3, min(200, int(c["show_records"]))))
     c["max_results"] = int(max(1, min(3000, int(c["max_results"]))))
+    c["shrink_k"] = float(max(0.0, min(50.0, float(c.get("shrink_k", 3.0)))))
 
     t0 = time.time()
     cands, skip_stats, ref_date = screen(c, exchange, sectors, progress_cb)
@@ -462,6 +474,7 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
                 it["sell_history"] = []
                 it["buy_n"] = it["sell_n"] = it["sell_1y"] = 0
                 it["n_pos"] = it["n_lag"] = it["m_pos"] = it["m_neg"] = 0
+                it["n_pos_sum"] = 0
                 it["n_mean"] = it["n_min"] = None
                 it["bars_hist"] = len(dates)
                 it["note"] = "历史不足"
@@ -479,6 +492,7 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
             pos_n = [b["n"] for b in buy if b["n"] >= 0]
             it["n_pos"] = len(pos_n)
             it["n_lag"] = len(buy) - len(pos_n)
+            it["n_pos_sum"] = int(sum(pos_n))
             if pos_n:
                 it["n_mean"] = round(float(np.mean(pos_n)), 2)
                 it["n_min"] = int(min(pos_n))
@@ -495,14 +509,30 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
             it["buy_history"] = it["sell_history"] = []
             it["buy_n"] = it["sell_n"] = it["sell_1y"] = 0
             it["n_pos"] = it["n_lag"] = it["m_pos"] = it["m_neg"] = 0
+            it["n_pos_sum"] = 0
             it["n_mean"] = it["n_min"] = None
             it["bars_hist"] = 0
             it["note"] = f"异常:{type(e).__name__}"
 
     # ---- 排序：1st 平均 n（仅 n≥0 样本）升序 → 2nd 近一年卖出九转数降序 → 3rd 代码 ----
     INF = 9e9
+    # 样本量收缩：n_rank = (Σn + K×全市场均值) / (m + K)，m = 该股 n≥0 样本数。
+    # 只有 1 个 n=0 样本的股票会被拉回全市场均值附近，不再霸榜；
+    # 样本多的股票几乎不受影响。K=0 时退回纯平均 n（字面口径）。
+    tot_sum = sum(it.get("n_pos_sum") or 0 for it in cands)
+    tot_cnt = sum(it.get("n_pos") or 0 for it in cands)
+    prior = round(float(tot_sum) / tot_cnt, 4) if tot_cnt else 0.0
+    K = float(c["shrink_k"])
+    for it in cands:
+        m = it.get("n_pos") or 0
+        if not m:
+            it["n_rank"] = None                      # 没有任何 n≥0 样本 → 垫底
+        elif K > 0:
+            it["n_rank"] = round((float(it.get("n_pos_sum") or 0) + K * prior) / (m + K), 4)
+        else:
+            it["n_rank"] = it.get("n_mean")
     cands.sort(key=lambda r: (
-        r.get("n_mean") if r.get("n_mean") is not None else INF,
+        r.get("n_rank") if r.get("n_rank") is not None else INF,
         -(r.get("sell_1y") or 0),
         r["code"],
     ))
@@ -529,6 +559,9 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
             "buy_total": tot_n,
             "buy_lag": tot_lag,          # 真底在信号之前（信号滞后）的买入样本数
             "buy_lag_pct": round(100.0 * tot_lag / tot_n, 1) if tot_n else None,
+            "n_prior": prior,            # 全市场 n≥0 样本的加权均值（收缩目标）
+            "shrink_k": K,               # 收缩强度（0 = 关闭，用纯平均 n 排序）
+            "thin": sum(1 for r in cands if (r.get("n_pos") or 0) == 1),  # 只有 1 个样本的只数
             "sell_total": tot_s,
             "sell_top_after": tot_mneg,  # 真顶在信号之后（信号属提前预警）的卖出样本数
             "sell_top_after_pct": round(100.0 * tot_mneg / tot_s, 1) if tot_s else None,
@@ -539,6 +572,7 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
             "confirm_bars": c["confirm_bars"], "hist_years": c["hist_years"],
             "include_triggered": bool(c["include_triggered"]),
             "exclude_st": bool(c["exclude_st"]),
+            "shrink_k": c["shrink_k"],
             "min_price": c["min_price"], "max_price": c["max_price"],
             "min_amt20_yi": c["min_amt20_yi"], "min_listed_days": c["min_listed_days"],
         },
