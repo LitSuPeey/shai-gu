@@ -15,7 +15,7 @@ from ..core import db as core_db
 from ..core import ranges
 from ..core import sync as core_sync
 from ..modules import (alert, ant, ant1000, bili, conditions, cycle, futures,
-                       pattern, similar, strategies, ticker)
+                       pattern, reverse9, similar, snap, strategies, ticker)
 
 router = APIRouter()
 
@@ -521,6 +521,67 @@ def pattern_run(req: PatternReq):
         return {"results": results, "skip_stats": stats}
     except TaskCancelled:
         return _cancelled_response()
+    finally:
+        _task_done()
+
+
+# ============ 形态打分 · 短线快拍 ============
+# 4 个子模式：A 周期震荡 / B 即将大涨 / C 反弹动能 / D 即将反弹，可多选。
+# 门槛用全市场横截面分位数（不照搬研究报告的绝对阈值），年线一票否决可关。
+class SnapReq(BaseModel):
+    cfg: dict = {}
+    exchange: Optional[str] = None
+    sectors: Optional[list[str]] = None
+    max_workers: int = 8
+
+
+@router.get("/api/snap/meta")
+def snap_meta():
+    """子模式清单与默认参数（前端渲染用）。"""
+    return {"modes": [{"key": k, "label": v} for k, v in snap.MODE_NAMES.items()],
+            "defaults": dict(snap.DEFAULTS)}
+
+
+@router.post("/api/snap/run")
+def snap_run(req: SnapReq):
+    _task_start("短线快拍")
+    try:
+        results, stats = snap.run(req.cfg, _norm_exchange(req.exchange),
+                                  req.sectors, req.max_workers,
+                                  progress_cb=_task_progress)
+        return {"results": _clean(results), "skip_stats": _clean(stats)}
+    except TaskCancelled:
+        return _cancelled_response()
+    finally:
+        _task_done()
+
+
+# ============ 9Reverse9 · 神奇九转「即将触发」+ 历史反转时点统计 ============
+# 程序一：全市场筛「即将到达买入九转」（还差天数可调）；
+# 程序二：对这些股票拉长历史，定位历史九转信号之后/之前真正反转的时间节点 n / m。
+class Reverse9Req(BaseModel):
+    cfg: dict = {}
+    exchange: Optional[str] = None
+    sectors: Optional[list[str]] = None
+
+
+@router.get("/api/r9/meta")
+def reverse9_meta():
+    """默认参数与指标口径说明（前端渲染用）。"""
+    return _clean(reverse9.meta_info())
+
+
+@router.post("/api/r9/run")
+def reverse9_run(req: Reverse9Req):
+    _task_start("9Reverse9 扫描")
+    try:
+        return _clean(reverse9.run(req.cfg, _norm_exchange(req.exchange),
+                                   req.sectors, progress_cb=_task_progress))
+    except TaskCancelled:
+        return {**_cancelled_response(), "results": [], "skip_stats": {}}
+    except Exception as e:  # noqa: BLE001 —— 数据/文件异常返回 JSON 错误而非 500
+        return {"error": f"9Reverse9 扫描失败: {e}", "results": [],
+                "skip_stats": {}, "notes": [str(e)[:200]], "elapsed": 0.0}
     finally:
         _task_done()
 

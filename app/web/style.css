@@ -237,6 +237,30 @@ a:hover { color: var(--accent-deep); }
   to { opacity: 1; transform: translateY(0); }
 }
 .panel-head { margin-bottom: 18px; }
+
+/* 面板内子页签（形态打分：经典形态 / 短线快拍） */
+.sub-tabs {
+  display: flex; gap: 6px; margin: 0 0 16px;
+  padding: 3px; width: fit-content;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg-soft, #f7f5ef);
+}
+.sub-tab {
+  border: none; background: transparent; cursor: pointer;
+  padding: 6px 16px; border-radius: 999px;
+  font-size: 13px; color: var(--ink-soft);
+  transition: all .18s ease; white-space: nowrap;
+}
+.sub-tab:hover { color: var(--ink); }
+.sub-tab.active {
+  background: var(--bg-card, #fff); color: var(--accent-deep);
+  font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
+}
+.sub-panel[hidden] { display: none; }
+.sub-note {
+  margin: 0 0 10px; color: var(--ink-soft); font-size: 12.5px; line-height: 1.75;
+}
+.sub-note b, .sub-note strong { color: var(--accent-deep); }
 .panel-head h2 {
   font-size: 22px; color: var(--ink); letter-spacing: 1px;
   display: inline-flex; align-items: center; gap: 10px;
@@ -1194,3 +1218,124 @@ a.fut-news-title:hover { color: var(--accent-deep); text-decoration: underline; 
   color: var(--ink-soft); background: var(--bg-hover);
   border-radius: 6px; font-family: var(--mono);
 }
+
+/* ===== 9Reverse9 · 神奇九转 =====
+   折叠态：排名 / 代码 / 名称 / 状态 / 指标 / 展开按钮 全用 flex-wrap 排布，
+   任何视口宽度下都只会「换行」不会「叠压」；展开态左右两栏各自横向滚动，
+   禁止任何绝对定位，从根本上杜绝文字重叠。 */
+.r9-summary {
+  padding: 9px 16px; font-size: 12.5px; line-height: 1.9;
+  color: var(--ink-soft); background: var(--bg-soft);
+  border-bottom: 1px solid var(--line);
+}
+.r9-summary b { color: var(--accent-deep); font-family: var(--mono); }
+
+.r9-list { display: flex; flex-direction: column; }
+.r9-empty-big { text-align: center; padding: 36px 16px; color: var(--ink-faint); font-size: 13px; }
+
+.r9-card { border-bottom: 1px solid var(--line-soft); }
+.r9-card:last-child { border-bottom: none; }
+
+/* —— 折叠态一行 —— */
+.r9-head {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 8px 14px; padding: 10px 16px;
+  transition: background .15s ease;
+}
+.r9-head:hover { background: var(--bg-hover); }
+
+.r9-rank {
+  flex: 0 0 36px; text-align: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  color: var(--ink-faint);
+}
+.r9-code {
+  flex: 0 0 auto; font-family: var(--mono);
+  font-weight: 700; letter-spacing: .4px; font-size: 13.5px;
+}
+.r9-name {
+  flex: 0 1 156px; min-width: 64px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.r9-status {
+  flex: 1 1 200px; min-width: 160px;
+  font-size: 12.5px; color: var(--ink-soft); white-space: normal;
+}
+.r9-status b { color: var(--accent-deep); font-family: var(--mono); font-size: 13.5px; }
+.r9-status i { font-style: normal; color: var(--ink-faint); font-size: 11.5px; }
+.r9-st-on { color: var(--good); font-weight: 600; }
+
+.r9-metrics { display: flex; flex-wrap: wrap; gap: 2px 16px; flex: 0 1 auto; }
+.r9-metric { display: flex; flex-direction: column; align-items: center; min-width: 58px; }
+.r9-metric i {
+  font-style: normal; font-size: 10.5px; line-height: 1.5;
+  color: var(--ink-faint); white-space: nowrap;
+}
+.r9-metric b { font-size: 13.5px; line-height: 1.4; font-family: var(--mono); color: var(--ink); }
+
+.r9-expand { flex: 0 0 auto; margin-left: auto; padding: 5px 14px; font-size: 12.5px; }
+
+/* —— 展开态明细 —— */
+.r9-detail {
+  padding: 2px 16px 16px;
+  background: var(--bg-hover);
+  border-top: 1px dashed var(--line);
+  overflow: hidden;
+  animation: r9drop .18s ease;
+}
+@keyframes r9drop { from { opacity: .25; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.r9-cols {
+  display: grid; min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px; margin-top: 12px;
+}
+.r9-col { min-width: 0; }
+.r9-col h4 {
+  margin: 0 0 8px; font-size: 13px; font-weight: 600;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+}
+.r9-col h4 small { font-weight: 400; font-size: 11px; color: var(--ink-faint); }
+.r9-col-buy h4 { color: var(--good); }
+.r9-col-sell h4 { color: var(--bad); }
+
+.r9-table-wrap {
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  -webkit-overflow-scrolling: touch;
+}
+.r9-table-wrap .result-table { width: max-content; min-width: 100%; }
+.r9-table-wrap .result-table th,
+.r9-table-wrap .result-table td {
+  white-space: nowrap; padding: 5px 10px; font-size: 12px;
+  position: static;                 /* 明细表不需要吸顶，避免小容器里串位 */
+}
+.r9-mono { font-family: var(--mono); color: var(--ink-soft); }
+.r9-text { color: var(--ink-soft); }
+.r9-k-best { color: var(--good); font-weight: 700; }
+.r9-k-mid { color: var(--accent-deep); font-weight: 600; }
+.r9-k-weak { color: var(--ink-faint); }
+/* 拐点落在信号的另一侧（买入 n<0＝信号滞后 / 卖出 m<0＝信号提前） */
+.r9-k-lag { color: #5b7c9d; font-weight: 600; }
+
+/* 折叠行超过渲染上限时的提示条 */
+.r9-more {
+  padding: 10px 16px; font-size: 12.5px; color: var(--ink-faint);
+  background: var(--bg-soft); border-top: 1px solid var(--line-soft);
+}
+
+.r9-empty {
+  font-size: 12.5px; color: var(--ink-faint); padding: 14px 12px;
+  background: var(--bg-card); border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+}
+.r9-note { margin-top: 10px; font-size: 12px; color: var(--ink-faint); }
+
+/* 窄屏：指标与按钮各自换行，仍然只换行不叠压 */
+@media (max-width: 760px) {
+  .r9-expand { margin-left: 0; }
+  .r9-metrics { flex: 1 1 100%; }
+  .r9-cols { grid-template-columns: minmax(0, 1fr); }
+}
+

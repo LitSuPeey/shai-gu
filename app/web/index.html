@@ -89,6 +89,7 @@
   <nav class="tabs" data-page-node-id="oA5FYrVpKN7SZb8UKqMcWE">
     <button class="tab active" data-tab="condition" data-page-node-id="FSHaYsCHJZjoWvMcE0Au0R">✅ 条件筛选</button>
     <button class="tab" data-tab="pattern" data-page-node-id="R4ZNngAtZ1OH58P5MIzpUM">🪄 形态打分</button>
+    <button class="tab" data-tab="r9" title="9Reverse9：神奇九转「即将到达买入九转」筛选 + 历史反转时点 n/m 统计">🔁 9Reverse9</button>
     <button class="tab" data-tab="ant" data-page-node-id="y3mbECoqiJ8rZdqj7UcKan">🐜 蚂蚁呀欸</button>
     <button class="tab" data-tab="similar" data-page-node-id="DTrWi26ypoiDfsKr6nzSDs">🧬 相似股</button>
     <button class="tab" data-tab="alert">⏰ 前瞻预警</button>
@@ -192,9 +193,15 @@
   <section class="panel" id="tab-pattern" data-page-node-id="73tnZqToycarhyo11ZUqrF">
     <div class="panel-head" data-page-node-id="VLDU6yqE6V5HBx25qzLlSJ">
       <h2 data-page-node-id="G91IoDT7bER2HzRmH7mTHs">形态打分</h2>
-      <p data-page-node-id="YlfckzTBB0vOhX7KmfSfXZ">与 40 个经典底部 / 顶部样本对比，60% 形态相似 + 结构分（梯度化，满分 37）。
-        <b>分数区间（0-100）</b>：≥75 强匹配 · 60-74 较匹配 · 45-59 弱匹配；顶部形态自动 ×0.5 折扣；同分时已入档（A/B/C 档）优先展示。</p>
+      <p data-page-node-id="YlfckzTBB0vOhX7KmfSfXZ">两种用法：<b>🪄 经典形态</b> = 与 40 个经典底部 / 顶部样本比对打分（匹配度 + 结构分）；<b>⚡ 短线快拍</b> = 按 4 类短线机会筛选（周期震荡 / 即将大涨 / 反弹动能 / 即将反弹）。</p>
     </div>
+    <div class="sub-tabs" id="patternSubTabs">
+      <button type="button" class="sub-tab active" data-sub="classic">🪄 经典形态</button>
+      <button type="button" class="sub-tab" data-sub="snap">⚡ 短线快拍</button>
+    </div>
+    <div class="sub-panel" id="patternSubClassic">
+      <p class="sub-note">与 40 个经典底部 / 顶部样本对比，60% 形态相似 + 结构分（梯度化，满分 37）。
+        <b>分数区间（0-100）</b>：≥75 强匹配 · 60-74 较匹配 · 45-59 弱匹配；顶部形态自动 ×0.5 折扣；同分时已入档（A/B/C 档）优先展示。</p>
     <div class="controls" data-page-node-id="zWM9z83p0sOrUFwqnEtgXY">
       <label data-page-node-id="FTkHuAifnFEQbP67HJsWDJ">最低匹配度
         <input type="number" id="patternMinScore" value="60" min="0" max="100" step="5" data-page-node-id="I2pjkVOGsxkvFwGsOra9yA" />
@@ -218,6 +225,121 @@
       <table class="result-table" id="patternTable" data-page-node-id="zhAkv8KoC6FiWFVaM9EabS">
         <thead data-page-node-id="5R8BM8eBkl8tuNpJCLAAql"></thead><tbody data-page-node-id="K9pIyTFFLspUBrGWd9cCXE"></tbody>
       </table>
+    </div>
+    </div><!-- /#patternSubClassic -->
+
+    <!-- ===== 形态打分 · 短线快拍（子页签） ===== -->
+    <div class="sub-panel" id="patternSubSnap" hidden>
+      <p class="sub-note">4 个子模式<strong>可多选</strong>，各自给 0~100 分，<strong>总分 = 命中模式里的最高分</strong>；同一只股票命中多个模式时会并列写出。
+        <b>🔄 周期震荡</b> 短周期内振幅明显、顶底交替、节奏有持续性 ·
+        <b>🚀 即将大涨</b> 缩量到极致 + 位置低 + 波动收缩（看 1~2 天）·
+        <b>💪 反弹动能</b> V 型回踩后收在区间上沿、动能最强（右侧，可即时买入）·
+        <b>🪃 即将反弹</b> 回踩缩量 + 贴着支撑 + 出现止跌信号（看 1~2 天，左侧）。</p>
+      <p class="src-note">方法论取自「短周期大涨股量化识别」与「形态匹配」两份研究报告，并做批判性修正：
+        位置 / 量能 / 带宽等门槛<strong>一律用全市场横截面分位数</strong>（研究样本仅 7 只 40 段，生存者偏差重，绝对阈值不可照搬）；
+        <strong>年线 MA250 默认一票否决</strong>（40 段主升浪无一例发生在年线下方）；不使用未来函数，只吃 t 时刻及之前的收盘数据。</p>
+      <div class="controls">
+        <label>最低分
+          <input type="number" id="snapMinScore" value="60" min="0" max="100" step="5" />
+        </label>
+        <label class="inline"><input type="checkbox" id="snapAboveMA250" checked /> 只看年线上方（趋势未破）</label>
+      </div>
+      <div class="controls">
+        <label class="inline"><input type="checkbox" id="snapModeA" checked /> 🔄 周期震荡</label>
+        <label class="inline"><input type="checkbox" id="snapModeB" checked /> 🚀 即将大涨</label>
+        <label class="inline"><input type="checkbox" id="snapModeC" checked /> 💪 反弹动能</label>
+        <label class="inline"><input type="checkbox" id="snapModeD" checked /> 🪃 即将反弹</label>
+      </div>
+      <details class="adv-params">
+        <summary>⚙ 快拍参数（可调，默认即设计值）</summary>
+        <div class="adv-grid">
+          <label>ZigZag 阈值(%) <input type="number" id="snapZzThr" value="12" min="3" max="40" step="1" /></label>
+          <label>周期回看(日) <input type="number" id="snapCycleLookback" value="180" min="60" max="400" step="10" /></label>
+          <label>最小20日均额(亿) <input type="number" id="snapMinAmt" value="1" min="0" max="50" step="0.5" /></label>
+          <label>最小流通市值(亿) <input type="number" id="snapMinMktcap" value="30" min="0" max="500" step="10" /></label>
+          <label>年化波动率下限(%) <input type="number" id="snapMinVol" value="30" min="0" max="120" step="5" /></label>
+          <label>最少上市天数 <input type="number" id="snapMinListed" value="250" min="60" max="1000" step="10" /></label>
+          <label>价格下限(元) <input type="number" id="snapMinPrice" value="3" min="0" max="100" step="1" /></label>
+          <label>价格上限(元) <input type="number" id="snapMaxPrice" value="400" min="20" max="3000" step="10" /></label>
+        </div>
+      </details>
+      <div class="actions">
+        <button class="btn btn-primary" id="btnRunSnap">▶ 开始快拍</button>
+        <button class="btn btn-ghost" id="btnSnapCsv" title="下载当前结果 CSV">⬇ 下载 CSV</button>
+        <span class="hint">全市场扫描（约 10 秒），结果按总分降序；点代码看站内 K 线、点名称查同花顺。</span>
+      </div>
+      <div class="result-meme" id="snapMeme" hidden>
+        <img src="" alt="meme" />
+        <div class="result-meme-text">
+          <div class="meme-big"></div>
+          <div class="meme-sub"></div>
+        </div>
+      </div>
+      <div class="results">
+        <table class="result-table" id="snapTable">
+          <thead></thead><tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 9Reverse9 · 神奇九转 ===== -->
+  <section class="panel" id="tab-r9">
+    <div class="panel-head">
+      <h2>9Reverse9 · 神奇九转</h2>
+      <p><b>程序一</b>：用「神奇九转」筛出<strong>即将到达买入九转</strong>的股票（「即将」的定义可调）；
+        <b>程序二</b>：对这些股票拉取长历史，找出历史上所有买入 / 卖出九转信号，
+        并在信号的<strong>对称窗口</strong>（±5 个交易日）内定位真正开始反转的那一天 ——
+        买入记录 <b>n</b>（<i>9Rev n天后开始真正反弹</i>）、卖出记录 <b>m</b>（<i>9Rev 提前m天开始下行</i>），
+        <strong>|n|、|m| 均 ≤ 5</strong>；n / m 为负表示拐点落在信号的另一侧（信号滞后或提前）。</p>
+      <p class="src-note">指标口径：收盘价连续 9 天低于 / 高于 4 个交易日前收盘价 → 买入九转 / 卖出九转。
+        反转须被<strong>拐点之后</strong>的行情确认（否则按「未确认」剔除），全程只用 t 时刻及之前的数据、不含未来函数。
+        <b>排序</b>：① 历史买入九转的平均 n 越小越靠前（只统计 n ≥ 0 的样本，避免信号越滞后排得越前）→ ② 一年内卖出九转信号越多越靠前。
+        实测：多数卖出九转的<strong>真顶落在信号之后</strong>，即它更像「提前预警」而不是滞后的见顶确认 —— 具体比例见扫描完的汇总条。</p>
+    </div>
+
+    <div class="controls">
+      <label>「即将」= 还差 ≤
+        <input type="number" id="r9Near" value="2" min="1" max="8" step="1" /> 天到达买入九转
+      </label>
+      <label class="inline"><input type="checkbox" id="r9Triggered" /> 含「今日刚好达成第 9 天」</label>
+    </div>
+
+    <details class="adv-params">
+      <summary>⚙ 9Reverse9 参数（可调，默认即设计值）</summary>
+      <div class="adv-grid">
+        <label>九转比较基准(日前) <input type="number" id="r9Gap" value="4" min="1" max="10" step="1" /></label>
+        <label>匹配容差 |n|,|m| ≤ <input type="number" id="r9Win" value="5" min="1" max="10" step="1" /></label>
+        <label>反转确认幅度(%) <input type="number" id="r9ConfirmPct" value="3" min="0" max="50" step="0.5" /></label>
+        <label>反转确认窗口(日) <input type="number" id="r9ConfirmBars" value="10" min="1" max="60" step="1" /></label>
+        <label>历史回看(年) <input type="number" id="r9HistYears" value="5" min="1" max="25" step="1" /></label>
+        <label>最少上市天数 <input type="number" id="r9MinListed" value="120" min="0" max="2000" step="10" /></label>
+        <label>最小20日均额(亿) <input type="number" id="r9MinAmt" value="0.5" min="0" max="50" step="0.5" /></label>
+        <label>价格下限(元) <input type="number" id="r9MinPrice" value="2" min="0" max="100" step="1" /></label>
+        <label>价格上限(元) <input type="number" id="r9MaxPrice" value="2000" min="20" max="5000" step="50" /></label>
+        <label>最多返回(只) <input type="number" id="r9MaxResults" value="600" min="10" max="3000" step="50" /></label>
+        <label class="adv-check"><input type="checkbox" id="r9ExcludeST" checked /> 剔除 ST / 退市</label>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btnRunR9">▶ 开始扫描</button>
+      <button class="btn btn-ghost" id="btnR9ExpandAll" title="一键展开 / 收起全部明细">⇕ 全部展开</button>
+      <button class="btn btn-ghost" id="btnR9Csv" title="下载当前结果 CSV（含历史明细）">⬇ 下载 CSV</button>
+      <span class="hint">程序一全市场计数约 2 秒 → 程序二只对候选股拉长历史统计。点代码看站内 K 线、点名称查同花顺。</span>
+    </div>
+
+    <div class="result-meme" id="r9Meme" hidden>
+      <img src="" alt="meme" />
+      <div class="result-meme-text">
+        <div class="meme-big"></div>
+        <div class="meme-sub"></div>
+      </div>
+    </div>
+
+    <div class="results">
+      <div class="r9-summary" id="r9Summary" hidden></div>
+      <div class="r9-list" id="r9List"></div>
     </div>
   </section>
 

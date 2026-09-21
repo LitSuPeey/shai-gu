@@ -82,6 +82,9 @@ const API = {
   conditionsList: () => fetchJSON('/api/conditions/list', {}, 15000),
   conditionsRun: body => fetchJSON('/api/conditions/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
   patternRun: body => fetchJSON('/api/pattern/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
+  snapRun: body => fetchJSON('/api/snap/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
+  r9Meta: () => fetchJSON('/api/r9/meta', {}, 20000),
+  r9Run: body => fetchJSON('/api/r9/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 900000, true),
   antRun: body => fetchJSON('/api/ant/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
   ant1000Run: body => fetchJSON('/api/ant1000/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 3600000, true),
   ant1000Cache: () => fetchJSON('/api/ant1000/cache', {}, 30000),
@@ -561,6 +564,340 @@ async function runPattern() {
     if (_userCancelled) { showMeme('patternMeme', 'farewell', '已取消这次打分', '随时可以重新开始'); return; }
     showMeme('patternMeme', 'error', '请求失败', String(e));
   }
+}
+
+// ========= 形态打分 · 短线快拍 =========
+// 列名必须踩中 PCT_RE（涨跌幅|涨幅|幅度|涨跌|超额|收益|振幅|回撤|回报）才会红绿着色：
+// 「均振幅%」「回撤%」「反弹幅度%」故意这样命名；「区间位置 / 量能分位 / 距年线%」不参与着色。
+function snapCfg() {
+  const modes = [];
+  if ($('#snapModeA').checked) modes.push('A');
+  if ($('#snapModeB').checked) modes.push('B');
+  if ($('#snapModeC').checked) modes.push('C');
+  if ($('#snapModeD').checked) modes.push('D');
+  const pct = (id, dv) => { const v = num(id, dv); return v / 100; };
+  return {
+    modes,
+    min_score: num('#snapMinScore', 55),
+    require_above_ma250: $('#snapAboveMA250').checked,
+    zz_thr: pct('#snapZzThr', 12),
+    cycle_lookback: num('#snapCycleLookback', 180),
+    min_amt20_yi: num('#snapMinAmt', 1),
+    min_mktcap_yi: num('#snapMinMktcap', 30),
+    min_vol20: pct('#snapMinVol', 30),
+    min_listed_days: num('#snapMinListed', 250),
+    min_price: num('#snapMinPrice', 3),
+    max_price: num('#snapMaxPrice', 400),
+  };
+}
+
+async function runSnap() {
+  hideMeme('snapMeme');
+  const cfg = snapCfg();
+  if (!cfg.modes.length) {
+    showMeme('snapMeme', 'ask', '请至少勾选一个子模式', '周期震荡 / 即将大涨 / 反弹动能 / 即将反弹');
+    return;
+  }
+  showOverlay('loading', `正在全市场快拍（${cfg.modes.length} 个模式）…（${estText('pattern', rangeVal())}）`, { cancellable: true });
+  try {
+    const data = await API.snapRun({ cfg, exchange: rangeVal() });
+    hideOverlay();
+    const results = data.results || [];
+    if (results.length === 0) {
+      showMeme('snapMeme', 'empty', '这轮没拍到符合条件的票', '降低最低分、放宽年线限制或换个范围再试');
+      renderTable('snapTable', []);
+      return;
+    }
+    const nf = v => (v == null ? null : v);
+    showMeme('snapMeme', 'success',
+      `${results.length} 只快拍命中 ⚡`,
+      Object.entries(data.skip_stats || {}).map(([k, v]) => `${k}:${v}`).join(' · ') || '按总分降序');
+    renderTable('snapTable', results.map(r => ({
+      '代码': r.code, '名称': r.name, '模式': r.modes, '总分': r.score,
+      '均振幅%': nf(r.amp_pct), '周期数': nf(r.n_cycles),
+      '区间位置': r.pos120, '量能分位': r.vol_rank, '回撤%': r.dd250_pct,
+      '反弹幅度%': nf(r.rebound_pct), '距年线%': nf(r.ma250_dev_pct),
+      '触发要点': r.state, '收盘': r.close,
+    })), { max: 300 });
+  } catch (e) {
+    hideOverlay();
+    if (_userCancelled) { showMeme('snapMeme', 'farewell', '已取消这次快拍', '随时可以重新开始'); return; }
+    showMeme('snapMeme', 'error', '请求失败', String(e));
+  }
+}
+
+function bindPatternSubTabs() {
+  const tabs = $$('#patternSubTabs .sub-tab');
+  if (!tabs.length) return;
+  tabs.forEach(btn => btn.addEventListener('click', () => {
+    tabs.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const which = btn.dataset.sub;
+    const classic = $('#patternSubClassic');
+    const sn = $('#patternSubSnap');
+    if (classic) classic.hidden = which !== 'classic';
+    if (sn) sn.hidden = which !== 'snap';
+  }));
+}
+
+// ========= 9Reverse9 · 神奇九转 =========
+// 折叠态：排名 + 代码 + 名称 + 状态 + 两个排序依据指标 + 展开按钮（flex-wrap，绝不重叠）
+// 展开态：左右两栏（买入九转 / 卖出九转）明细表，表体各自横向滚动
+let _r9Last = null;
+let _r9AllOpen = false;
+
+function r9Cfg() {
+  return {
+    near_remaining: num('#r9Near', 2),
+    include_triggered: $('#r9Triggered').checked,
+    ref_gap: num('#r9Gap', 4),
+    match_window: num('#r9Win', 5),
+    confirm_pct: num('#r9ConfirmPct', 3),
+    confirm_bars: num('#r9ConfirmBars', 10),
+    hist_years: num('#r9HistYears', 5),
+    min_listed_days: num('#r9MinListed', 120),
+    min_amt20_yi: num('#r9MinAmt', 0.5),
+    min_price: num('#r9MinPrice', 2),
+    max_price: num('#r9MaxPrice', 2000),
+    max_results: num('#r9MaxResults', 600),
+    exclude_st: $('#r9ExcludeST').checked,
+  };
+}
+
+// 明细表：n/m 用色阶（≤1 最强 / ≤3 中 / 其余弱；负数＝拐点在信号另一侧，单独配色）
+// 列名不进 PCT_RE，故不会被全站红绿规则误染
+function r9KClass(k) {
+  if (k < 0) return 'r9-k-lag';
+  return k <= 1 ? 'r9-k-best' : (k <= 3 ? 'r9-k-mid' : 'r9-k-weak');
+}
+
+function r9DetailTable(recs, side) {
+  const isBuy = side === 'buy';
+  if (!recs || !recs.length) {
+    return `<div class="r9-empty">历史上暂无「已确认」的${isBuy ? '买入' : '卖出'}九转样本</div>`;
+  }
+  const head = isBuy
+    ? '<tr><th>信号日</th>'
+      + '<th title="真正开始反弹的交易日（对称窗口内最低价所在日）">真正反弹日</th>'
+      + '<th title="n = 真正反弹底 − 信号日。负数表示底在信号之前，即信号滞后">n(日)</th>'
+      + '<th>信号收盘</th><th>阶段低点</th><th>记录</th></tr>'
+    : '<tr><th>信号日</th>'
+      + '<th title="真正开始下行的交易日（对称窗口内最高价所在日）">真正顶部日</th>'
+      + '<th title="m = 信号日 − 真正顶部日。负数表示顶在信号之后，即信号提前预警">m(日)</th>'
+      + '<th>信号收盘</th><th>阶段高点</th><th>记录</th></tr>';
+  const body = recs.map(x => {
+    const k = isBuy ? x.n : x.m;
+    return `<tr>
+      <td class="r9-mono">${x.date}</td>
+      <td class="r9-mono">${x.rev_date}</td>
+      <td class="num ${r9KClass(k)}">${k}</td>
+      <td class="num">${x.price}</td>
+      <td class="num">${x.rev_price}</td>
+      <td class="r9-text">${escHtml(x.text || '')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="r9-table-wrap"><table class="result-table small">
+    <thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+// 展开区整体（两栏 + 备注）。只在用户点开时生成 —— 见 r9FillDetail。
+function r9DetailHtml(r) {
+  const bh = r.buy_history || [];
+  const sh = r.sell_history || [];
+  const lag = r.n_lag || 0;
+  const topAfter = r.m_neg || 0;
+  const buySub = `共 ${r.buy_n || 0} 条，下表为最近 ${bh.length} 条`
+    + (lag ? `；其中 ${lag} 条真底在信号之前（信号滞后，不计入平均 n）` : '');
+  const sellSub = `共 ${r.sell_n || 0} 条，下表为最近 ${sh.length} 条`
+    + (topAfter ? `；其中 ${topAfter} 条真顶在信号之后（该信号属提前预警）` : '');
+  const note = r.note ? `<div class="r9-note">⚠ ${escHtml(r.note)}</div>` : '';
+  return `<div class="r9-cols">
+      <div class="r9-col r9-col-buy">
+        <h4>买入九转 · n = 真正反弹底 − 信号日 <small>${buySub}</small></h4>
+        ${r9DetailTable(bh, 'buy')}
+      </div>
+      <div class="r9-col r9-col-sell">
+        <h4>卖出九转 · m = 信号日 − 真正顶部日 <small>${sellSub}</small></h4>
+        ${r9DetailTable(sh, 'sell')}
+      </div>
+    </div>${note}`;
+}
+
+// 懒渲染：折叠态只放一个空壳，点开/批量展开时才生成明细 DOM。
+// 不做懒加载的话，几百只股票 × 每只 80 条明细 ≈ 20 万个节点，首屏必卡。
+function r9FillDetail(card) {
+  const det = card.querySelector('.r9-detail');
+  if (!det || det.children.length) return;      // 已渲染
+  const idx = Number(det.dataset.idx);
+  const r = (_r9Last && (_r9Last.results || [])[idx]) || null;
+  det.innerHTML = r ? r9DetailHtml(r) : '<div class="r9-empty">数据已失效，请重新扫描</div>';
+}
+
+function r9Card(r, idx) {
+  const na = v => (v == null ? '—' : v);
+  const status = r.triggered
+    ? '<span class="r9-status r9-st-on">已达成买入九转 · 第 9 天</span>'
+    : `<span class="r9-status">即将买入九转 · 还差 <b>${r.remain}</b> 天<i>（当前 ${r.cur_count}/9）</i></span>`;
+  return `<div class="r9-card">
+    <div class="r9-head">
+      <span class="r9-rank" title="排序名次">${r.rank}</span>
+      <a href="#" class="stock-link code-link r9-code" data-code="${r.code}" title="快速查看 · 站内看K线">${r.code}</a>
+      <a href="${thsLink(r.code)}" target="_blank" rel="noopener noreferrer" class="stock-link name-link r9-name" title="详细查询 · 同花顺新窗口">${escHtml(r.name || '')}</a>
+      ${status}
+      <span class="r9-metrics">
+        <span class="r9-metric" title="历史买入九转的平均 n（只统计 n≥0 的样本；越小越靠前）"><i>平均n</i><b>${na(r.n_mean)}</b></span>
+        <span class="r9-metric" title="历史买入九转的最小 n（同上，只看 n≥0）"><i>最小n</i><b>${na(r.n_min)}</b></span>
+        <span class="r9-metric" title="历史上「已确认」的买入九转条数（含信号滞后的负 n 样本）"><i>买入9转</i><b>${r.buy_n || 0}</b></span>
+        <span class="r9-metric" title="最近一年内的卖出九转条数（第 2 排序依据）"><i>卖出9转/1年</i><b>${r.sell_1y || 0}</b></span>
+        <span class="r9-metric" title="参与统计的历史K线根数"><i>K线数</i><b>${r.bars_hist || 0}</b></span>
+      </span>
+      <button class="btn btn-ghost r9-expand" type="button">展开 ▾</button>
+    </div>
+    <div class="r9-detail" hidden data-idx="${idx}"></div>
+  </div>`;
+}
+
+const R9_RENDER_MAX = 400;      // 折叠行上限：再多就只渲染前 N 只（CSV 仍导出全量）
+
+function renderR9(data) {
+  const list = $('#r9List');
+  const sum = $('#r9Summary');
+  if (!list) return;
+  const rows = (data && data.results) || [];
+  if (!rows.length) {
+    if (sum) sum.hidden = true;
+    list.innerHTML = '<div class="r9-empty-big">— 暂无结果 —</div>';
+    return;
+  }
+  const p = (data && data.params) || {};
+  const sk = (data && data.skip_stats) || {};
+  const s = (data && data.stats) || {};
+  const skTxt = Object.keys(sk).length
+    ? ' · 跳过：' + Object.entries(sk).map(([k, v]) => `${k}:${v}`).join(' / ') : '';
+  const lagTxt = (s.buy_lag_pct == null) ? ''
+    : ` · 买入样本中 <b>${s.buy_lag_pct}%</b> 的真底落在信号<strong>之前</strong>（信号滞后）`;
+  const sellTxt = (s.sell_top_after_pct == null) ? ''
+    : ` · 卖出样本中 <b>${s.sell_top_after_pct}%</b> 的真顶落在信号<strong>之后</strong>（属提前预警）`;
+  if (sum) {
+    sum.hidden = false;
+    sum.innerHTML = `共 <b>${rows.length}</b> 只 · 数据截止 <b>${data.ref_date || '—'}</b>`
+      + ` · 「即将」还差 ≤ <b>${p.near_remaining}</b> 天`
+      + ` · |n|,|m| ≤ <b>${p.match_window}</b> · 历史回看 <b>${p.hist_years}</b> 年`
+      + ` · 用时 <b>${data.elapsed || 0}s</b>${lagTxt}${sellTxt}${skTxt}`;
+  }
+  const shown = rows.slice(0, R9_RENDER_MAX);
+  _r9Last = data;        // 明细懒渲染时按 data-idx 回查，必须先落好引用
+  list.innerHTML = shown.map((r, i) => r9Card(r, i)).join('')
+    + (rows.length > shown.length
+      ? `<div class="r9-more">仅渲染前 ${shown.length} / 共 ${rows.length} 只（下方展开按钮不影响导出）；`
+        + '需要全量请点「⬇ 下载 CSV」</div>' : '');
+  // 代码 → 站内 K 线（与全站一致）
+  list.querySelectorAll('.code-link').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    switchTab('kline');
+    $('#klineCode').value = a.dataset.code;
+    loadKline();
+  }));
+  // 展开 / 收起（各自独立，首次展开才生成明细）
+  list.querySelectorAll('.r9-expand').forEach(b => b.addEventListener('click', () => {
+    const card = b.closest('.r9-card');
+    const det = card.querySelector('.r9-detail');
+    const willOpen = det.hidden;
+    if (willOpen) r9FillDetail(card);
+    det.hidden = !willOpen;
+    b.textContent = willOpen ? '收起 ▴' : '展开 ▾';
+  }));
+}
+
+function r9ToggleAll() {
+  const cards = $$('#r9List .r9-card');
+  if (!cards.length) return;
+  _r9AllOpen = !_r9AllOpen;
+  if (_r9AllOpen) cards.forEach(r9FillDetail);   // 先补渲染再展开
+  cards.forEach(c => {
+    c.querySelector('.r9-detail').hidden = !_r9AllOpen;
+    const b = c.querySelector('.r9-expand');
+    if (b) b.textContent = _r9AllOpen ? '收起 ▴' : '展开 ▾';
+  });
+  const btn = $('#btnR9ExpandAll');
+  if (btn) btn.textContent = _r9AllOpen ? '⇕ 全部收起' : '⇕ 全部展开';
+}
+
+async function runR9() {
+  hideMeme('r9Meme');
+  const cfg = r9Cfg();
+  showOverlay('loading', '9Reverse9：程序一全市场九转计数 → 程序二历史反转统计…', { cancellable: true });
+  try {
+    const data = await API.r9Run({ cfg, exchange: rangeVal() });
+    hideOverlay();
+    if (data && data.error) {
+      showMeme('r9Meme', 'error', '扫描失败', String(data.error));
+      renderR9({ results: [] });
+      return;
+    }
+    _r9Last = data;
+    const rows = (data && data.results) || [];
+    if (!rows.length) {
+      showMeme('r9Meme', 'empty', '这轮没有「即将买入九转」的股票',
+        '把「还差天数」放宽、勾选「含今日刚达成第 9 天」，或换一个范围再试');
+      renderR9(data);
+      return;
+    }
+    const top = rows.slice(0, 3).map(r => r.name || r.code).join('、');
+    showMeme('r9Meme', 'success', `${rows.length} 只即将 / 已达成买入九转 🔁`,
+      `最优：${top} · 数据截止 ${data.ref_date || '—'}`);
+    renderR9(data);
+  } catch (e) {
+    hideOverlay();
+    if (_userCancelled) { showMeme('r9Meme', 'farewell', '已取消这次扫描', '随时可以重新开始'); return; }
+    showMeme('r9Meme', 'error', '请求失败', String(e));
+  }
+}
+
+// CSV：先总表，再附「历史明细」段落（买入 / 卖出分开列）
+// 单元格统一走 csvCell 转义 —— 名称/板块/文案里出现逗号或引号时不会串列
+function csvCell(v) {
+  if (v == null) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function downloadR9Csv() {
+  const d = _r9Last;
+  if (!d || !((d.results || []).length)) {
+    showMeme('r9Meme', 'ask', '还没有可导出的结果', '先点「开始扫描」');
+    return;
+  }
+  const st = d.stats || {};
+  const head = ['排名', '代码', '名称', '板块', '当前买入计数', '还差天数', '已达成',
+    '历史买入9转数', '平均n(仅n≥0)', '最小n', '买入样本中真底早于信号的条数',
+    '近一年卖出9转数', '历史卖出9转数', '卖出样本中真顶晚于信号的条数', 'K线数', '收盘'];
+  const lines = d.results.map(r => [r.rank, r.code, r.name, r.sector, r.cur_count,
+    r.triggered ? 0 : r.remain, r.triggered ? '是' : '',
+    r.buy_n || 0, r.n_mean == null ? '' : r.n_mean, r.n_min == null ? '' : r.n_min,
+    r.n_lag || 0, r.sell_1y || 0, r.sell_n || 0, r.m_neg || 0,
+    r.bars_hist || 0, r.close].map(csvCell).join(','));
+  const meta = [
+    ['口径', '数据截止', d.ref_date || '', '窗口', '|n|,|m| ≤ ' + ((d.params || {}).match_window || '')],
+    ['口径', '买入样本总数', st.buy_total == null ? '' : st.buy_total,
+      '其中真底早于信号', st.buy_lag_pct == null ? '' : st.buy_lag_pct + '%'],
+    ['口径', '卖出样本总数', st.sell_total == null ? '' : st.sell_total,
+      '其中真顶晚于信号', st.sell_top_after_pct == null ? '' : st.sell_top_after_pct + '%'],
+  ].map(r => r.map(csvCell).join(','));
+  const detail = ['', '—— 历史九转明细 ——', '代码,名称,类型,信号日,真正反转日,n或m(日),记录'];
+  d.results.forEach(r => {
+    (r.buy_history || []).slice().reverse().forEach(x =>
+      detail.push([r.code, r.name, '买入九转', x.date, x.rev_date, x.n, x.text].map(csvCell).join(',')));
+    (r.sell_history || []).slice().reverse().forEach(x =>
+      detail.push([r.code, r.name, '卖出九转', x.date, x.rev_date, x.m, x.text].map(csvCell).join(',')));
+  });
+  const csv = '\ufeff' + [head.join(','), ...lines, ...meta, ...detail].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '9Reverse9_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ========= 蚂蚁 =========
@@ -1945,6 +2282,7 @@ async function init() {
   const csvMap = [['btnStrategyCsv','strategyTable','策略扫描'],
                   ['btnCondCsv','condTable','条件筛选'],
                   ['btnPatternCsv','patternTable','形态打分'],
+                  ['btnSnapCsv','snapTable','短线快拍'],
                   ['btnAntCsv','antTable','蚂蚁扫描'],
                   ['btnAnt1000Csv','ant1000Table','长周期筛选'],
                   ['btnSimilarCsv','similarATable','相似股A类'],
@@ -1958,6 +2296,11 @@ async function init() {
   $('#btnCondAll').addEventListener('click', () => $$('#condGrid input').forEach(cb => { cb.checked = true; cb.closest('.cond-item').classList.add('active'); }));
   $('#btnCondNone').addEventListener('click', () => $$('#condGrid input').forEach(cb => { cb.checked = false; cb.closest('.cond-item').classList.remove('active'); }));
   $('#btnRunPattern').addEventListener('click', runPattern);
+  bindPatternSubTabs();                                    // 形态打分：经典形态 / 短线快拍 子页签
+  $('#btnRunSnap').addEventListener('click', runSnap);
+  $('#btnRunR9').addEventListener('click', runR9);          // 9Reverse9 · 神奇九转
+  $('#btnR9ExpandAll').addEventListener('click', r9ToggleAll);
+  $('#btnR9Csv').addEventListener('click', downloadR9Csv);
   $('#btnRunAnt').addEventListener('click', runAnt);
   $('#btnRunAnt1000').addEventListener('click', runAnt1000);
   refreshAnt1000Cache();   // 长周期历史数据缓存状态（异步，失败静默）
