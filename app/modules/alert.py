@@ -139,6 +139,11 @@ DEFAULTS: dict = {
         "surge_n_min": 3,                      # 常驻字辈触发①：大涨只数下限
         "limitup_min": 2,                      # 常驻字辈触发②：涨停只数下限
         "limitup_ratio_min": 2.0,              # 常驻字辈触发②：涨停密度 ÷ 全市场涨停密度
+        "density_breadth_floor": 0.0,          # 触发②额外要求：组内上涨家数占比 − 全市场上涨
+        #                                        家数占比（百分点）不得低于此值。0 = 跟涨家数
+        #                                        至少不能低于全市场（即「确有批量跟涨」）。
+        #                                        改用宽度而非「均涨跑输」是因为后者在 0 附近
+        #                                        有刀锋效应（−0.16% 与 +0.01% 结论相反）。
         "standing_top_n": 3,                   # 未触发的常驻字辈按超额取前 N 行作「观察」
     },
 }
@@ -859,22 +864,20 @@ ZODIAC_LORE = {
 }
 
 # ---- 常驻字辈（平时隐藏，显著跑赢全市场才报警）----
+# 精简原则：只保留「历史上被反复炒作、且字辈本身有独立含义」的组；同义组必须合并，
+# 否则「中字辈」与「国字辈」命中重叠 69 只（占中字辈 21%），两张表会给出同义结论。
 SPECIAL_STANDING = [
-    {"id": "hua", "概念": "华字辈（中华概念）", "字符": ["华"],
+    {"id": "hua", "概念": "华字辈 · 中华概念", "字符": ["华"],
      "依据": "「华」＝中华/华夏，重大纪念日与民族情绪节点最易被选作情绪载体"
-             "（2026-09-18 华软科技、华天科技、华鑫股份、华瓷股份等集体涨停）"},
-    {"id": "zhong", "概念": "中字辈（中字头/中国）", "字符": ["中"],
-     "依据": "「中」字头多为央企国企，兼具「中」的彩头与中特估逻辑"},
-    {"id": "guo", "概念": "国字辈（国字号）", "字符": ["国"],
-     "依据": "「国」＝家国叙事，国资/央企标签，纪念日窗口外也常独立异动"},
-    {"id": "dongfang", "概念": "东方系", "字符": ["东方"],
-     "依据": "「东方」= 太阳升起的方向，吉祥地名/名称字辈，历史上多次集体异动"},
+             "（2026-09-18 华软科技、华天科技、华鑫股份等集体涨停）"},
+    {"id": "zhongzi", "概念": "中字头央企（中/国）", "字符": ["中", "国"],
+     "依据": "「中/国」双字头基本盘是央企国企，兼具家国彩头与中特估逻辑。"
+             "两字原本分列，但交集达 69 只（中国神华、中国银行、中国中免…）→ 已合并为一组，避免同义重复"},
     {"id": "zhaocai", "概念": "招财字辈（发/财/金/鑫/银/富）", "字符": ["发", "财", "金", "鑫", "银", "富"],
      "依据": "纯彩头字辈：名字里带「发/财/金/鑫」天然讨喜，游资偏爱"},
-    {"id": "jiqing", "概念": "吉庆字辈（福/泰/吉/祥/旺）", "字符": ["福", "泰", "吉", "祥", "旺", "盛", "隆", "兴"],
+    {"id": "jiqing", "概念": "吉庆字辈（福/泰/吉/祥/旺/盛/隆/兴）",
+     "字符": ["福", "泰", "吉", "祥", "旺", "盛", "隆", "兴"],
      "依据": "传统吉语字辈，弱势行情里常作为「讨彩头」的抱团方向"},
-    {"id": "shuzi", "概念": "数字字辈（三/五/七/九/百/千/万）", "字符": ["三", "五", "七", "八", "九", "百", "千", "万"],
-     "依据": "「麻将概念」一脉：数字本身就是彩头（三羊马、七匹狼、五洋自控、九阳股份）"},
     {"id": "animal", "概念": "动物字辈（炒动物行情）",
      "字符": ["龙", "马", "羊", "牛", "虎", "兔", "狼", "象", "鹿", "鹏", "凤", "麒麟",
              "豹", "鹰", "鹤", "燕", "鱼", "猪", "蛇", "鸡", "狗", "鼠", "猫", "猴",
@@ -890,34 +893,43 @@ SPECIAL_CODE = [
      "依据": "「代码吉利就炒」——尾号谐音（发发发 / 一路发 / 我要发 / 就要发）"},
 ]
 
+# 已下线的常驻组（保留记录，说明为何精简；不要重新加回，除非有新的实证催化）
+SPECIAL_RETIRED = {
+    "dongfang": "「东方系」仅 30 只、字符过窄（只认「东方」二字，不含「东」），"
+                "实测超额长期在 0 附近，属于「列了也不说明问题」的行 → 下线",
+    "shuzi": "「数字字辈」把三/五/七/八/九/百/千/万全收进来共 234 只，"
+             "与吉庆/招财/动物大量交叉；数字本身缺乏统一催化，属噪声 → 下线"
+             "（真正的生肖数字梗如「三羊马」已由生肖组覆盖）",
+}
+
 # ---- 日期彩头（±window 天窗口内列出）----
+# 精简原则：只保留「谐音彩头 + 情绪催化」双条件成立的日期；纯节日（教师节/青年节/
+# 520）命中面窄且历史上无稳定集体行情，会稀释信号 → 下线。
 SPECIAL_DATES = [
-    {"id": "d0918", "日期": (9, 18), "概念": "9·18「就要发」×「中华」", "字符": ["华", "发"],
+    {"id": "d0918", "日期": (9, 18), "概念": "9·18「就要发」× 中华概念", "字符": ["华", "发"],
      "依据": "9·18 谐音「就要发」，叠加九一八纪念日的民族情绪，"
              "「华」字辈常被当日的「中华概念」情绪载体集体拉抬"},
     {"id": "d1001", "日期": (10, 1), "概念": "国庆「国/庆/华」", "字符": ["国", "庆", "华"],
      "依据": "国庆长假前后消费＋家国叙事双催化，名字带「国/庆/华」的标的易被点名"},
-    {"id": "d0701", "日期": (7, 1), "概念": "七一建党「党/国/华」", "字符": ["党", "国", "华"],
-     "依据": "建党纪念日的家国情绪窗口"},
+    {"id": "d1213", "日期": (12, 13), "概念": "国家公祭日「国/华」", "字符": ["国", "华"],
+     "依据": "国家公祭日的家国情绪窗口，情绪强度弱于 9·18"},
     {"id": "d0801", "日期": (8, 1), "概念": "八一建军「军/兵/武」", "字符": ["军", "兵", "武"],
      "依据": "建军节的军工情绪窗口，名字带「军/兵」的标的常被顺带炒作"},
-    {"id": "d0903", "日期": (9, 3), "概念": "9·3 抗战胜利纪念「国/华/军」", "字符": ["国", "华", "军", "胜"],
-     "依据": "抗战胜利纪念日的家国情绪窗口"},
-    {"id": "d1213", "日期": (12, 13), "概念": "国家公祭日「国/华」", "字符": ["国", "华", "和平"],
-     "依据": "国家公祭日的家国情绪窗口，情绪强度弱于 9·18"},
+    {"id": "d0701", "日期": (7, 1), "概念": "七一建党「党/国/华」", "字符": ["党", "国", "华"],
+     "依据": "建党纪念日的家国情绪窗口"},
     {"id": "d0808", "日期": (8, 8), "概念": "8·8「发发」", "字符": ["发", "八"],
      "依据": "双八谐音「发发」，彩头字辈的日子型催化"},
-    {"id": "d0101", "日期": (1, 1), "概念": "元旦「元/新」", "字符": ["元", "新"],
-     "依据": "跨年讨彩头，名字带「元/新」的标的易被选作新年情绪载体"},
-    {"id": "d0504", "日期": (5, 4), "概念": "五四青年节「青/年」", "字符": ["青", "年"],
-     "依据": "青年节的情绪窗口，命中面窄，多为彩头型短线"},
-    {"id": "d0910", "日期": (9, 10), "概念": "教师节「教/育/师」", "字符": ["教", "育", "师"],
-     "依据": "教师节的字辈彩头，常与教育板块政策共振"},
-    {"id": "d0520", "日期": (5, 20), "概念": "5·20「我爱你」", "字符": ["爱", "情", "心"],
-     "依据": "「520」＝我爱你的谐音彩头，婚庆/情感消费方向偶尔被带"},
-    {"id": "d0909", "日期": (9, 9), "概念": "9·9「久久」/重阳", "字符": ["九", "久", "阳"],
-     "依据": "九月九「久久」＋重阳节，九字辈与阳字辈的日子型催化"},
 ]
+
+# 已下线的日期彩头（保留说明，避免以后被当成漏写补回来）
+SPECIAL_DATES_RETIRED = {
+    "d0504": "五四青年节「青/年」——「年」「青」命中面窄且无稳定集体行情",
+    "d0910": "教师节「教/育/师」——命中少，主要由教育板块政策驱动而非日期彩头",
+    "d0520": "5·20「爱/情/心」——「心」字命中过宽且与题材无关",
+    "d0101": "元旦「元/新」——「新」字命中过宽（新能源/新材料…），噪声大于信号",
+    "d0909": "9·9「久久」/重阳——与「数字字辈」重复，且九字辈已下线",
+    "d0903": "9·3 抗战胜利纪念——紧邻 9·18，家国窗口重叠，只保留强度更高的 9·18",
+}
 
 _SPOT_MEM: dict = {"ts": 0.0, "df": None, "src": ""}   # 全市场快照内存缓存（120s）
 
@@ -1108,15 +1120,17 @@ def _special_rules(today: _dt.date, cfg: dict) -> list:
                             "窗口依据": f"{ed.strftime('%Y-%m-%d')}（{when}）"})
                 break
     cur_z, nxt_z, days_next, next_date, cur_start = _zodiac_now(today)
-    out.append({"id": f"zodiac_{cur_z}", "概念": f"{cur_z}字辈（当前生肖年）",
+    out.append({"id": f"zodiac_{cur_z}", "概念": f"{cur_z}字辈 · 当前生肖年",
                 "字符": list(ZODIAC_HOMOPHONE.get(cur_z, [cur_z])), "类型": "生肖",
                 "窗口依据": f"{cur_z}年（{cur_start.strftime('%Y-%m-%d')} 春节起）",
+                "_lead_days": 10 ** 9,   # 当前生肖：全年在窗，离高潮最远
                 "依据": ZODIAC_LORE.get(cur_z, "")})
     lead = int(cfg.get("zodiac_lead_days", 150) or 150)
     if days_next <= lead:
-        out.append({"id": f"zodiac_{nxt_z}", "概念": f"{nxt_z}字辈（{nxt_z}年·即将到来）",
+        out.append({"id": f"zodiac_{nxt_z}", "概念": f"{nxt_z}字辈 · {nxt_z}年即将到来",
                     "字符": list(ZODIAC_HOMOPHONE.get(nxt_z, [nxt_z])), "类型": "生肖",
                     "窗口依据": f"{nxt_z}年春节 {next_date.strftime('%Y-%m-%d')}（还有 {days_next} 天）",
+                    "_lead_days": days_next,   # 距春节越近，情绪越容易起来
                     "依据": ZODIAC_LORE.get(nxt_z, "")})
     return out
 
@@ -1152,6 +1166,7 @@ def _special_scan(c: dict, notes: list) -> dict:
     valid = df[df["涨跌幅%"].notna()]
     mkt_avg = float(valid["涨跌幅%"].mean()) if len(valid) else 0.0
     mkt_lu = float(valid["涨停"].mean() * 100) if len(valid) else 0.0   # 全市场涨停率(%)
+    up_ratio_mkt = float((valid["涨跌幅%"] > 0).mean()) if len(valid) else 0.0  # 全市场上涨家数占比
 
     surge = float(cfg.get("surge_pct", 5.0) or 5.0)
     min_hits = int(cfg.get("min_hits", 5) or 5)
@@ -1160,9 +1175,15 @@ def _special_scan(c: dict, notes: list) -> dict:
     surge_n_min = int(cfg.get("surge_n_min", 3) or 3)
     lu_min = int(cfg.get("limitup_min", 2) or 2)
     lu_ratio_min = float(cfg.get("limitup_ratio_min", 2.0) or 2.0)
+    # 密度型触发（gate_b）的辅助门槛：仅靠「涨停密度高」就报触发，会被「少数个股冲板、
+    # 整体在跌」的组骗到（实测华字辈 307 只 8 涨停、密度 2.58×，但均涨跑输、宽度 −1.7pp）。
+    # 因此密度型触发额外要求「组内上涨家数占比不显著低于全市场」——用宽度（breadth）这个
+    # 结构性口径，而不是拿超额均涨去比一个近乎 0 的小数（−0.16% 与 +0.01% 会得出相反结论，
+    # 属于典型的「刀锋效应」，没有统计意义）。默认 −5pp 容差，即允许小幅落后。
+    density_breadth_floor = float(cfg.get("density_breadth_floor", 0.0))
     standing_n = int(cfg.get("standing_top_n", 3) or 0)
 
-    concepts, stocks, observed = [], [], []
+    concepts, stocks, observed, window_cold = [], [], [], []
     for rule in _special_rules(today, cfg):
         g = df[_rule_mask(df, rule)]
         hit = int(len(g))
@@ -1178,27 +1199,59 @@ def _special_scan(c: dict, notes: list) -> dict:
         excess = avg - mkt_avg
         lu_pct = n_lu / len(gv) * 100
         lu_ratio = (lu_pct / mkt_lu) if mkt_lu > 0 else 0.0
+        # 宽度：组内上涨家数占比 − 全市场上涨家数占比（百分点）。这是与「均涨幅」互补的
+        # 独立维度：均涨幅会被少数暴涨股拉高，宽度看的是「有多少票在跟」。
+        breadth = (n_up / len(gv) * 100) - (up_ratio_mkt * 100)
         is_window = rule["类型"] in ("日期彩头", "生肖")
         # 触发①：整体跑赢全市场 且 有大涨/涨停；触发②：涨停密度显著高于全市场（批量冲板）
         gate_a = excess >= excess_min and (n_lu >= 1 or n_surge >= surge_n_min)
-        gate_b = n_lu >= lu_min and lu_ratio >= lu_ratio_min
-        active = is_window or gate_a or gate_b
+        # gate_b（批量冲板型触发）：涨停密度显著高于全市场，**且组内跟涨的家数不塌方**。
+        # 只用密度 + 超额均涨判断会被「少数个股涨停」骗到：华字辈 307 只里 8 只涨停
+        # （密度 2.58×）但宽度 −1.7pp、均涨跑输，报成"批量冲板触发"就是给用户相反信号。
+        # 这里改用宽度（breadth，与均涨互补的独立维度）守门：min(n_lu, lu_min) 保证确有
+        # 批量涨停，宽度门槛保证"确有批量跟涨"而不是孤立几只。
+        gate_b = (n_lu >= lu_min and lu_ratio >= lu_ratio_min
+                  and breadth >= density_breadth_floor)
+        # 窗口类（日期彩头 / 生肖）原先"进窗即列"，实测马字辈全年在列、超额 −1.01、
+        # 0 涨停 0 大涨 —— 这就是用户说的"太多太杂"。现改为：
+        #   有热度（gate_a 或 gate_b）→ 正常列出；
+        #   无热度 → 只保留「强势窗口」（宽度显著高于全市场）或临近高潮的窗口，
+        #   其余归入 notes 一行带过，不再占用正式表格。
+        strong_window = gate_a or gate_b
+        near_peak = rule["类型"] == "日期彩头" or (
+            rule["类型"] == "生肖" and rule.get("_lead_days", 10 ** 9) <= 45)
+        # 第三档「异动」：涨停密度够高、但**跟涨家数没跟上**（宽度显著落后全市场）→
+        # 说明是「少数个股冲板」而非「整个字辈在动」。这既不能报「触发」（会误导），
+        # 也不该丢掉（8 只涨停是真实信息）→ 单列一档，前端与信号合成只把它当观察项，
+        # 不做方向结论。
+        lopsided = (not strong_window) and n_lu >= lu_min and lu_ratio >= lu_ratio_min
+        active = strong_window or (is_window and (breadth >= 0 or near_peak))
         lead = gv.sort_values("涨跌幅%", ascending=False).iloc[0]
         row = {
             "概念": rule["概念"], "类型": rule["类型"], "窗口依据": rule["窗口依据"],
             "命中": hit, "上涨": n_up, "涨停": n_lu, "大涨": n_surge,
             "涨停%": _r(lu_pct, 2), "均涨幅%": _r(avg, 2), "超额%": _r(excess, 2),
+            "宽度%": _r(breadth, 1), "涨停密度×": _r(lu_ratio, 2),
             "最强": f"{lead['名称']} {_r(lead['涨跌幅%'], 2)}%",
-            "触发": bool(active),
-            "判定": ("窗口内 · 触发" if is_window else
-                     ("批量冲板 %.1f× 触发" % lu_ratio) if gate_b else
-                     ("跑赢全市场 %.1f 触发" % excess) if gate_a else "观察（未达阈值）"),
+            "触发": bool(active), "异动": bool(lopsided or (is_window and not active)),
+            "判定": ("批量冲板 %.1f× · 宽度 %+.1fpp" % (lu_ratio, breadth)) if gate_b else
+                    ("跑赢全市场 %+.2f" % excess) if gate_a else
+                    ("涨停 %.1f× 但宽度 %+.1fpp（仅少数个股冲板，跟涨家数未扩散）"
+                     % (lu_ratio, breadth)) if lopsided else
+                    ("窗口内 · 未达热度门槛" if is_window else "观察（未达阈值）"),
             "依据": rule.get("依据", ""),
         }
-        if active:
+        if active or lopsided:
             concepts.append(row)
+            # 明细只留「真的在动」的票：上涨 且（大涨 或 量比>1.5）。原先只取涨幅前 N，
+            # 会把 +0.01% 的僵尸票也列进去，与「该概念在动」的结论自相矛盾。
             top = gv.sort_values("涨跌幅%", ascending=False)
-            for _, r in top[top["涨跌幅%"] > 0].head(top_n).iterrows():
+            movers = top[(top["涨跌幅%"] > 0) &
+                         ((top["涨跌幅%"] >= surge) |
+                          (pd.to_numeric(top["量比"], errors="coerce").fillna(0) >= 1.5))]
+            if movers.empty:      # 极端情况（全组无量比数据）退回原口径，避免明细整片空白
+                movers = top[top["涨跌幅%"] > 0]
+            for _, r in movers.head(top_n).iterrows():
                 stocks.append({
                     "概念": rule["概念"], "代码": r["代码"], "简称": r["名称"],
                     "涨跌幅%": _r(r["涨跌幅%"], 2), "最新价": _r(r["最新价"], 2),
@@ -1208,6 +1261,8 @@ def _special_scan(c: dict, notes: list) -> dict:
                 })
         elif rule["类型"] in ("字辈", "代码"):
             observed.append(row)
+        elif is_window:
+            window_cold.append(row)
     # 未触发的常驻字辈：只保留超额最高的 N 行作「观察」，让人看见今日最强的字辈是谁
     if standing_n > 0:
         observed.sort(key=lambda x: -(x["超额%"] or -999))
@@ -1215,8 +1270,15 @@ def _special_scan(c: dict, notes: list) -> dict:
         if len(observed) > standing_n:
             notes.append("特殊概念·其余字辈本次未列示：" + "、".join(
                 f"{o['概念']} {o['超额%']:+.2f}" for o in observed[standing_n:]))
-    # 报警的排前面（触发 > 观察），组内按涨停数、再看超额
-    concepts.sort(key=lambda x: (not x.get("触发"), -x["涨停"], -(x["超额%"] or -999)))
+    # 窗口类但无热度的（如全年在窗的生肖）：不占表格，合并成一行 notes，避免刷屏
+    if window_cold:
+        window_cold.sort(key=lambda x: -(x["宽度%"] or -999))
+        notes.append("特殊概念·窗口内但无热度的概念（未列入表格）：" + "、".join(
+            f"{o['概念']}（均涨{o['均涨幅%']}% 宽度{o['宽度%']}pp）" for o in window_cold))
+    # 排序：正式触发 > 异动(少数冲板) > 观察；组内按涨停数、再看超额
+    def _rank(x):
+        return (2 if x.get("触发") else (1 if x.get("异动") else 0)) * -1
+    concepts.sort(key=lambda x: (_rank(x), -x["涨停"], -(x["超额%"] or -999)))
     if len(stocks) > 200:   # 明细总量闸门，避免前端口径过载
         stocks = sorted(stocks, key=lambda s: -(s["涨跌幅%"] or 0))[:200]
     if not concepts:
@@ -1224,7 +1286,7 @@ def _special_scan(c: dict, notes: list) -> dict:
     cur_z, nxt_z, days_next, next_date, cur_start = _zodiac_now(today)
     return {"date": today.strftime("%Y-%m-%d"), "src": src, "concepts": concepts,
             "stocks": stocks, "market_avg": _r(mkt_avg, 2), "surge": surge,
-            "market_lu%": _r(mkt_lu, 2),
+            "market_lu%": _r(mkt_lu, 2), "market_up%": _r(up_ratio_mkt * 100, 1),
             "zodiac": {"当前": cur_z, "下一": nxt_z, "距春节(天)": days_next,
                        "春节日期": next_date.strftime("%Y-%m-%d")}}
 
@@ -1234,44 +1296,65 @@ def _special_scan(c: dict, notes: list) -> dict:
 # 四、信号合成（埋伏 / 逃离 / 趋势 三类）
 # ==================================================================
 def _synthesize(out: dict) -> list:
+    """把各模块结论合成为「动作导向」的信号表。
+
+    定位（避免与各模块表格重复）：**本表只回答「现在该做什么」**，字段压缩为
+    对象 / 动作 / 时效 / 来源模块 + 一行最关键的量化依据。各模块表格负责
+    「为什么」与全部明细 —— 因此这里不再复述整段口径描述。
+    """
     sig = []
+
+    def add(kind, obj, act, ttl, why, src):
+        if not obj:
+            return
+        sig.append({"类型": kind, "对象": str(obj), "动作": act, "时效": ttl,
+                    "依据": why, "来源": src})
+
     cal = out.get("calendar") or {}
     for w in cal.get("埋伏窗口", []):
-        sig.append({"类型": "埋伏", "对象": w["主题"],
-                    "依据": f"{w['关联事件']}前 {w['距事件(天)']} 天，处于规律窗口（{w['规律窗口']}）",
-                    "动作": "分批布局", "时效": "事件前完成布局"})
+        add("埋伏", w["主题"], "分批布局", "事件前完成布局",
+            f"{w['关联事件']}前 {w['距事件(天)']} 天（窗口 {w['规律窗口']}）", "日历预警")
     for s in out.get("stealth", []):
-        sig.append({"类型": "埋伏", "对象": s["板块"],
-                    "依据": f"5日涨{s['5日涨幅%']}% · 主力净流入{s['5日主力净流入(亿)']}亿 · 换手未放量",
-                    "动作": "小仓位跟随并设止损", "时效": "3-10 天"})
+        add("埋伏", s["板块"], "小仓位跟随并设止损", "3-10 天",
+            f"5日涨{s['5日涨幅%']}% · 净流入{s['5日主力净流入(亿)']}亿 · 换手未放量", "异动侦测")
     for s in out.get("selling", []):
-        sig.append({"类型": "逃离", "对象": s["板块"], "依据": s["判定"],
-                    "动作": "回避追高，持仓分批止盈", "时效": "1-2 周"})
+        add("逃离", s["板块"], "回避追高，持仓分批止盈", "1-2 周",
+            f"5日涨{s['5日涨幅%']}% 已高位放量 · 主力净流出{abs(s['5日主力净流入(亿)'] or 0)}亿",
+            "异动侦测")
     for s in out.get("crowding", []):
-        sig.append({"类型": "逃离", "对象": s["板块"],
-                    "依据": f"拥挤度 {s['触发项数']} 项触发（换手/量能/涨幅/资金流出）",
-                    "动作": "分批止盈，保留底仓", "时效": "1-2 周内执行"})
+        add("逃离", s["板块"], "分批止盈，保留底仓", "1-2 周内执行",
+            f"拥挤度 {s['触发项数']} 项触发（换手/量能/涨幅/资金流出）", "拥挤度监控")
     for s in out.get("cold", []):
-        sig.append({"类型": "趋势", "对象": s["板块"],
-                    "依据": f"冷度得分 {s['冷度得分']}（成交占比/换手/涨幅均处尾部）",
-                    "动作": "关注政策催化与均值回归，低位埋伏", "时效": "1-3 个月"})
+        add("趋势", s["板块"], "关注政策催化与均值回归，低位埋伏", "1-3 个月",
+            f"冷度得分 {s['冷度得分']}（成交占比/换手/涨幅均处尾部）", "冷门板块")
     for ch in out.get("chains", []):
         if ch["环节"] == "上游" and (ch["5日涨幅%"] or -99) > 3:
             chain = next((x for x in TRANSMIT_CHAINS if x["上游"] == ch["传导链"]), None)
             mid = "、".join(chain.get("中游板块", [])) if chain else ""
-            sig.append({"类型": "趋势", "对象": f"{ch['板块']}（上游）",
-                        "依据": f"上游 5 日涨 {ch['5日涨幅%']}%，向中游传导（{mid}）",
-                        "动作": "关注中游补涨与业绩兑现时滞", "时效": "1-3 个月"})
-    # 特殊概念（名字玄学）：仅「触发」的概念成信号，「观察」行不入信号
+            add("趋势", f"{ch['板块']}（上游）", "关注中游补涨与业绩兑现时滞", "1-3 个月",
+                f"上游 5 日涨 {ch['5日涨幅%']}%，向中游传导（{mid}）", "传导链")
+    # 特殊概念：仅「触发」的概念成信号；「异动」（少数冲板）与「观察」行只作表格观察项。
     sp = out.get("special") or {}
     mkt = sp.get("market_avg")
     for s in [c for c in (sp.get("concepts") or []) if c.get("触发")][:12]:
-        sig.append({"类型": "概念", "对象": s["概念"],
-                    "依据": f"{s['窗口依据']} · 命中 {s['命中']} 只（上涨 {s['上涨']}、涨停 {s['涨停']}），"
-                            f"均涨幅 {s['均涨幅%']}% vs 全市场 {mkt}%（超额 {s['超额%']} 个百分点）· 最强 {s['最强']}",
-                    "动作": "纯情绪题材：只做辨识度最高的龙头，追高极易接力站岗",
-                    "时效": "1-5 天（来得快、去得快）"})
-    return sig
+        add("概念", s["概念"], "纯情绪题材：只做辨识度最高的龙头，追高极易接力站岗",
+            "1-5 天（来得快、去得快）",
+            f"命中 {s['命中']} 只（上涨 {s['上涨']}、涨停 {s['涨停']}），"
+            f"均涨 {s['均涨幅%']}% vs 全市场 {mkt}%（超额 {s['超额%']}pp）· 最强 {s['最强']}",
+            "特殊概念")
+    # 去重：同一「类型+对象」（大小写/全半角归一）只留第一条，避免日历与埋伏窗口、
+    # 异动与拥挤度对同一板块各出一条，造成信号表自相重复。
+    seen, uniq = set(), []
+    for s in sig:
+        key = (s["类型"], s["对象"].replace("（", "(").replace("）", ")").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(s)
+    # 排序：先按类型（埋伏→逃离→趋势→概念），同类型保持合成顺序（已按各模块优先级）
+    order = {"埋伏": 0, "逃离": 1, "趋势": 2, "概念": 3}
+    uniq.sort(key=lambda s: order.get(s["类型"], 9))
+    return uniq
 
 
 # ==================================================================
@@ -1526,9 +1609,11 @@ def _table(headers, rows, pct_cols=(), wide_cols=()):
 def _sig_item(s: dict) -> str:
     t = s.get("类型")
     k = "b" if t == "埋伏" else ("s" if t == "逃离" else ("c" if t == "概念" else "t"))
+    src = s.get("来源")
+    src_tag = f"<span class='ttl'>来源：{_esc(src)}</span>" if src else ""
     return (f"<div class='sig {k}'><span class='tag {k}'>{_esc(t)}</span>"
             f"<b>{_esc(s.get('对象'))}</b> — {_esc(s.get('动作'))}"
-            f"<span class='ttl'>时效：{_esc(s.get('时效'))}</span>"
+            f"<span class='ttl'>时效：{_esc(s.get('时效'))}</span>{src_tag}"
             f"<small>{_esc(s.get('依据'))}</small></div>")
 
 
@@ -1666,28 +1751,32 @@ def build_report_html(result: dict, cfg: Optional[dict] = None) -> str:
         sp = res.get("special") or {}
         zoo = sp.get("zodiac") or {}
         head = (f"数据源：{sp.get('src') or '—'} · 全市场均涨 {sp.get('market_avg')}%"
-                f"、涨停率 {sp.get('market_lu%')}%"
+                f"、上涨占比 {sp.get('market_up%')}%、涨停率 {sp.get('market_lu%')}%"
                 if sp.get("src") else "数据源不可用")
         if zoo:
             head += (f" · 当前生肖 {zoo.get('当前')}年，下一生肖 {zoo.get('下一')}年"
                      f"（春节 {zoo.get('春节日期')}，还有 {zoo.get('距春节(天)')} 天）")
         surge_hdr = f"大涨(≥{(sp.get('surge') or 5):g}%)"
-        crows = [[c["概念"], c["窗口依据"], c["命中"], c["上涨"], c["涨停"], c["大涨"],
-                  c["均涨幅%"], c["超额%"], c["最强"], c["判定"]]
-                 for c in (sp.get("concepts") or [])]
+        crows = []
+        for c in (sp.get("concepts") or []):
+            grade = "🔴 触发" if c.get("触发") else ("🟡 异动" if c.get("异动") else "⚪ 观察")
+            crows.append([c["概念"], c["类型"], grade, c["命中"], c["上涨"], c["涨停"],
+                          c["大涨"], c["均涨幅%"], c["超额%"], c["宽度%"],
+                          c["涨停密度×"], c["最强"], c["判定"]])
         srows = [[s["概念"], s["代码"], s["简称"], s["涨跌幅%"], s["最新价"],
                   s["成交额(亿)"], s["换手率%"], s["量比"], s["涨停"]]
                  for s in (sp.get("stocks") or [])]
         lore = "".join(f"<div style='margin:2px 0'><b>{_esc(c['概念'])}</b>：{_esc(c['依据'])}</div>"
                        for c in (sp.get("concepts") or []) if c.get("依据") and c.get("触发"))
         parts.append("<div class='card wide' id='special'><h2>🎋 特殊概念"
-                     "<small>名字玄学 / 谐音梗 / 生肖字辈 · 窗口内列出 + 字辈跑赢全市场/批量涨停才报警 · 纯情绪题材</small></h2>"
+                     "<small>名字玄学 / 谐音梗 / 生肖字辈 · 三档判定：🔴触发（跑赢全市场）/ "
+                     "🟡异动（少数个股冲板，组内跑输）/ ⚪观察 · 纯情绪题材，非买入建议</small></h2>"
                      + f"<div style='margin:0 0 8px;font-size:12px;color:#d8c9a3'>{_esc(head)}</div>"
-                     + _table(["概念", "窗口/依据", "命中", "上涨", "涨停", surge_hdr,
-                               "均涨幅%", "超额%", "最强", "判定"],
-                              crows, pct_cols=(6, 7), wide_cols=(0, 1))
+                     + _table(["概念", "类型", "档位", "命中", "上涨", "涨停", surge_hdr,
+                               "均涨%", "超额%", "宽度%", "涨停密度×", "最强", "判定"],
+                              crows, pct_cols=(7, 8, 9), wide_cols=(0, 12))
                      + ("<div style='margin:12px 0 6px;font-weight:700;color:#d8c9a3'>"
-                        f"📈 命中个股明细（按涨幅降序，共 {len(srows)} 条）</div>"
+                        f"📈 命中个股明细（仅列真在动的票：大涨或量比≥1.5，共 {len(srows)} 条）</div>"
                         + _table(["概念", "代码", "简称", "涨跌幅%", "最新价", "成交额(亿)",
                                   "换手率%", "量比", "状态"], srows, pct_cols=(3,))
                         if srows else "")

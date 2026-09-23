@@ -90,6 +90,7 @@
     <button class="tab active" data-tab="condition" data-page-node-id="FSHaYsCHJZjoWvMcE0Au0R">✅ 条件筛选</button>
     <button class="tab" data-tab="pattern" data-page-node-id="R4ZNngAtZ1OH58P5MIzpUM">🪄 形态打分</button>
     <button class="tab" data-tab="r9" title="9Reverse9：神奇九转「即将到达买入九转」筛选 + 历史反转时点 n/m 统计">🔁 9Reverse9</button>
+    <button class="tab" data-tab="beton" title="Bet on：年度级长期布局 —— 从长历史里找可能持续 1 年以上的上涨，给买点档 / 评分 / 周期时长 / 卖出量化纪律">🎯 Bet on</button>
     <button class="tab" data-tab="ant" data-page-node-id="y3mbECoqiJ8rZdqj7UcKan">🐜 蚂蚁呀欸</button>
     <button class="tab" data-tab="similar" data-page-node-id="DTrWi26ypoiDfsKr6nzSDs">🧬 相似股</button>
     <button class="tab" data-tab="alert">⏰ 前瞻预警</button>
@@ -257,7 +258,7 @@
           <label>周期回看(日) <input type="number" id="snapCycleLookback" value="180" min="60" max="400" step="10" /></label>
           <label>最小20日均额(亿) <input type="number" id="snapMinAmt" value="1" min="0" max="50" step="0.5" /></label>
           <label>最小流通市值(亿) <input type="number" id="snapMinMktcap" value="30" min="0" max="500" step="10" /></label>
-          <label>年化波动率下限(%) <input type="number" id="snapMinVol" value="30" min="0" max="120" step="5" /></label>
+          <label>年化波动率下限%(0=不限) <input type="number" id="snapMinVol" value="0" min="0" max="120" step="5" /></label>
           <label>最少上市天数 <input type="number" id="snapMinListed" value="250" min="60" max="1000" step="10" /></label>
           <label>价格下限(元) <input type="number" id="snapMinPrice" value="3" min="0" max="100" step="1" /></label>
           <label>价格上限(元) <input type="number" id="snapMaxPrice" value="400" min="20" max="3000" step="10" /></label>
@@ -346,8 +347,112 @@
     </div>
   </section>
 
+  <!-- ===== Bet on · 长期布局（年度级趋势） ===== -->
+  <section class="panel" id="tab-beton">
+    <div class="panel-head">
+      <h2>Bet on · 长期布局</h2>
+      <p>目标：找出<strong>可能持续一年以上</strong>的上涨行情，并回答三件事 ——
+        <b>① 现在能不能买</b>（买点档 + 0~100 买入评分）、<b>② 这段行情大概还能走多久</b>
+        （按该股<b>自己</b>的历史周期推算，单位自动切 周 / 月 / 年）、
+        <b>③ 什么时候卖</b>（具体到这只股票的目标价区间与四条量化纪律线）。</p>
+      <p class="src-note"><b>方法论与诚实边界</b>：素材是两份长周期量化研究档案
+        （《长周期上涨股票量化识别手册》+《run2 买入侧信号研究结论》）与两轮独立复核。
+        <b>两轮研究的最终结论都是 <code>RESEARCH_REJECTED</code></b> ——
+        run1 的 Deflated Sharpe 仅 0.8107（&lt; 0.95）、Haircut 后夏普从 1.25 腰斩到 0.64；
+        run2 的「提前埋伏」净增量只有 +1.49pp、8 年里 4 年为负；横截面复核发现位置类因子
+        对未来 120 日收益是<b>负向</b>（反转）。因此本模块<b>不假装能预测</b>，它只做三件有据可依的事：
+        ① 用研究里<b>唯一在任何口径下都没被否掉</b>的「状态基线」当主锚
+        （STATE_ABOVE 实测 120 日胜率 67.94%、最大不利偏移仅 −10.69%）；
+        ② 用该股<b>自身历史</b>的上涨段分布给出周期与目标价的量级参考；
+        ③ 给出可执行的卖出纪律。被证伪的「启动前埋伏」档保留但<b>明确标注低置信度</b>。</p>
+      <p class="src-note">数据：长历史来自 <code>data/hist.db</code>（1990 起、中位 3300 根，
+        <b>前复权</b>），与主库 <code>daily</code> 合并后使用 —— 两库同为前复权，重叠区间逐行相等。
+        另有一层<b>兜底</b>：若个别数据源混入不复权序列，送股/除权跳空会按板块涨跌停上限自动识别
+        并向前复权，避免被误判成巨幅回撤。
+        打分因子全部<strong>只用 t 时刻及之前的收盘数据</strong>；历史周期挖掘需要 t 之后的行情
+        才能确认一段上涨已结束，它<strong>只用于统计该股历史体质与周期时长，不参与打分</strong>。
+        不承诺收益、不构成投资建议。</p>
+    </div>
+
+    <div class="controls">
+      <label>最低评分
+        <input type="number" id="boMinScore" value="65" min="0" max="100" step="5" />
+      </label>
+      <label>买点档
+        <select id="boTier">
+          <option value="">全部档位</option>
+          <option value="T2">T2 山腰确认（主推）</option>
+          <option value="T3">T3 加速/已走远</option>
+          <option value="T1">T1 启动前埋伏（低置信）</option>
+          <option value="T4">T4 观察</option>
+        </select>
+      </label>
+      <label>结果上限
+        <input type="number" id="boMaxResults" value="300" min="20" max="3000" step="20" />
+      </label>
+      <label title="按该股自身历史节奏推算的周期时长下限 —— 直接服务「持续一年以上」这个诉求；样本不足、算不出时长的股票会被排除（不做默认放行）">预估周期至少
+        <select id="boMinDur">
+          <option value="0">不限</option>
+          <option value="63">3 个月</option>
+          <option value="126">6 个月</option>
+          <option value="252">1 年</option>
+          <option value="504">2 年</option>
+        </select>
+      </label>
+      <label class="inline"><input type="checkbox" id="boWithFutures" checked /> 拉取上游商品期货（联网）</label>
+    </div>
+
+    <div class="controls">
+      <span class="bo-lbl">趋势状态（多选，默认全开）</span>
+      <label class="inline"><input type="checkbox" id="boStAbove" checked /> 趋势中·山腰确认</label>
+      <label class="inline"><input type="checkbox" id="boStExtend" checked /> 加速段·已走远</label>
+      <label class="inline"><input type="checkbox" id="boStTurning" checked /> 转折初期</label>
+      <label class="inline"><input type="checkbox" id="boStBelow" checked /> 深度沉寂</label>
+      <label class="inline"><input type="checkbox" id="boStMixed" /> 震荡无趋势（回避区）</label>
+    </div>
+
+    <details class="adv-params">
+      <summary>⚙ Bet on 参数（可调，默认即设计值）</summary>
+      <div class="adv-grid">
+        <label title="周期统计回看年数；打分因子固定用最近 500 根以上日K">周期回看(年) <input type="number" id="boHistYears" value="12" min="3" max="30" step="1" /></label>
+        <label title="「长周期」定义：涨幅下限">长周期涨幅下限(%) <input type="number" id="boLongGain" value="80" min="30" max="500" step="10" /></label>
+        <label title="「长周期」定义：跨度下限（交易日）">长周期跨度下限(日) <input type="number" id="boLongDays" value="250" min="60" max="800" step="10" /></label>
+        <label title="v4 状态机：从段内高点回撤超过该值即判定该段结束">深回撤终止线(%) <input type="number" id="boDdDeep" value="45" min="15" max="80" step="5" /></label>
+        <label title="MA60 需连续 N 日低于 MA120 才判定段结束；0=单日死叉即结束（易被均线缠绕切碎）">死叉确认(日) <input type="number" id="boDownConfirm" value="10" min="0" max="60" step="1" /></label>
+        <label title="统计「上涨段」时的最小涨幅（只影响周期统计，不影响打分）">上涨段最小涨幅(%) <input type="number" id="boCycleMinGain" value="30" min="10" max="200" step="5" /></label>
+        <label>最小20日均额(亿) <input type="number" id="boMinAmt" value="1" min="0" max="50" step="0.5" /></label>
+        <label>最小流通市值(亿) <input type="number" id="boMinMktcap" value="30" min="0" max="2000" step="10" /></label>
+        <label>最少上市天数 <input type="number" id="boMinListed" value="400" min="120" max="2000" step="20" /></label>
+        <label>价格下限(元) <input type="number" id="boMinPrice" value="3" min="0" max="100" step="1" /></label>
+        <label>价格上限(元) <input type="number" id="boMaxPrice" value="3000" min="50" max="5000" step="50" /></label>
+        <label class="adv-check"><input type="checkbox" id="boExcludeST" checked /> 剔除 ST / 退市</label>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btnRunBeton">▶ 开始扫描</button>
+      <button class="btn btn-ghost" id="btnBetonExpandAll" title="一键展开 / 收起全部「详细」">⇕ 全部展开</button>
+      <button class="btn btn-ghost" id="btnBetonCsv" title="下载当前结果 CSV（含得分构成与周期明细）">⬇ 下载 CSV</button>
+      <span class="hint">全市场约 15 秒（长历史读取占大头）。点代码看站内 K 线、点名称查同花顺、点「详细 ▾」看入选理由与卖出纪律。</span>
+    </div>
+
+    <div class="result-meme" id="boMeme" hidden>
+      <img src="" alt="meme" />
+      <div class="result-meme-text">
+        <div class="meme-big"></div>
+        <div class="meme-sub"></div>
+      </div>
+    </div>
+
+    <div class="results">
+      <div class="bo-summary" id="boSummary" hidden></div>
+      <div class="bo-list" id="boList"></div>
+      <div class="bo-watch" id="boWatch" hidden></div>
+    </div>
+  </section>
+
   <!-- ===== 蚂蚁呀欸 ===== -->
-  <section class="panel" id="tab-ant" data-page-node-id="9LMjEYHNZBg2v1fmh9JF9s">
+  <section class="panel" id="tab-ant" data-page-node-id="9LMjEYNZBg2v1fmh9JF9s">
     <div class="panel-head" data-page-node-id="yKnDqRF49bC3x2AjuzGKQW">
       <h2 data-page-node-id="dZVqtc7e3vQFnqIHyqEdCr">蚂蚁呀欸</h2>
       <p data-page-node-id="xx1QRlBr4Qkzz4DC6ahWNt">四层流水线：硬过滤 → 形态识别 → 综合打分 → 启动标记。专抓底部吸筹、均线粘合待启动的标的。
@@ -522,7 +627,7 @@
   <section class="panel" id="tab-alert">
     <div class="panel-head">
       <h2>前瞻预警</h2>
-      <p>以「提前量」为核心的预警系统：日历预热 · 异动侦测 · 冷门板块 · 国家队资金 · 外资重仓 · 拥挤度监控 · 传导链雷达 · 特殊概念（名字玄学/生肖字辈）——四重领先机制拒绝马后炮。</p>
+      <p>以「提前量」为核心的预警系统，8 个模块各回答一个不同问题：<b>核心信号</b>（现在该做什么）· <b>日历预警</b>（什么时候到）· <b>埋伏窗口</b>（提前多久布局）· <b>异动侦测</b>（钱比价先动）· <b>拥挤度</b>（什么时候该走）· <b>冷门板块</b>（没人看的地方）· <b>传导链</b>（上游涨了买中游）· <b>宏观雷达</b>（外部环境）· <b>国家队/外资</b>（谁在长期持有）· <b>特殊概念</b>（名字玄学情绪题材）。</p>
     </div>
     <div class="controls">
       <label class="inline"><input type="checkbox" id="alertSecCalendar" checked /> 日历预警</label>
@@ -566,6 +671,7 @@
         <label>特殊概念·明细只数 <input type="number" id="aSpecTopN" value="15" min="1" max="50" /></label>
         <label>特殊概念·超额阈值(百分点) <input type="number" id="aSpecExcess" value="1.5" min="0" max="10" step="0.5" /></label>
         <label>特殊概念·涨停密度倍数 <input type="number" id="aSpecLuRatio" value="2" min="1" max="10" step="0.5" /></label>
+        <label>特殊概念·密度档宽度容差(pp) <input type="number" id="aSpecLuFloor" value="-5" min="-20" max="5" step="1" /></label>
         <label>特殊概念·大涨阈值(%) <input type="number" id="aSpecSurge" value="5" min="1" max="20" step="0.5" /></label>
         <label>特殊概念·观察行数 <input type="number" id="aSpecObserve" value="3" min="0" max="10" /></label>
       </div>
@@ -585,17 +691,41 @@
     </div>
     <div class="hint" id="alertNotes" style="margin-top:8px"></div>
     <div class="sim-blocks" style="margin-top:10px">
-      <div class="sim-block"><h3>🎯 核心信号（埋伏/逃离/趋势）</h3>
+      <div class="sim-block" style="grid-column: 1 / -1"><h3>🎯 核心信号 · 现在该做什么
+        <span class="sec-badge" style="margin-left:8px">动作导向：埋伏 / 逃离 / 趋势 / 概念，点代码看 K 线</span></h3>
         <table class="result-table small" id="alertSignalTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="calendar" title="点击选入/踢出该模块（同步上方勾选）">📅 日历预警</h3><div class="hint" id="alertMonthThemes" style="margin-bottom:6px"></div>
+
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="calendar" title="点击选入/踢出该模块（同步上方勾选）">📅 日历预警 · 什么时候到</h3>
+        <div class="hint" id="alertMonthThemes" style="margin-bottom:6px"></div>
+        <div class="sec-purpose">回答：未来 N 天有哪些可预期的事件？按距今远近排序，越近越靠前。</div>
         <table class="result-table small" id="alertCalendarTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="calendar" title="点击选入/踢出该模块（同步上方勾选）">🪟 规律埋伏窗口</h3>
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="calendar" title="点击选入/踢出该模块（同步上方勾选）">🪟 规律埋伏窗口 · 提前多久布局</h3>
+        <div class="sec-purpose">回答：哪些主题现在就在「提前埋伏」的窗口里？核心反马后炮机制——只在窗口内提示，事件发生当天已出窗。</div>
         <table class="result-table small" id="alertWindowTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="stealth" title="点击选入/踢出该模块（同步上方勾选）">🕵️ 异动侦测（埋伏/出货嫌疑）</h3>
+
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="stealth" title="点击选入/踢出该模块（同步上方勾选）">🕵️ 异动侦测 · 钱比价先动</h3>
+        <div class="sec-purpose">回答：哪些板块「资金先动、热度未起」？两种截然相反的情形分列——<b>埋伏嫌疑</b>（涨了+钱进来+换手不高）vs <b>出货嫌疑</b>（高位+放量+钱在跑）。</div>
         <table class="result-table small" id="alertStealthTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="cold" title="点击选入/踢出该模块（同步上方勾选）">🧊 长期最冷门板块</h3>
+
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="cold" title="点击选入/踢出该模块（同步上方勾选）">🧊 冷门板块 · 没人看的地方</h3>
+        <div class="sec-purpose">回答：钱最不关注的板块是哪些？冷度 = 成交额占比 + 换手 + 涨幅三维度分位加权，分位越低越冷门。</div>
         <table class="result-table small" id="alertColdTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block" id="natOuterBlock"><h3 class="sec-toggle" data-sec="national" title="点击选入/踢出该模块（同步上方勾选）">🏛️ 国家队资金流向（前十大股东名单口径）</h3>
+
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="crowding" title="点击选入/踢出该模块（同步上方勾选）">🔥 拥挤度监控 · 什么时候该走</h3>
+        <div class="sec-purpose">回答：哪些板块已经过热该撤了？四项（换手分位/量能分位/20日涨幅/资金流出）各自独立计数，达到阈值项数才报。<b>与「异动侦测」相反方向</b>：那边是钱在进，这边是热到头。</div>
+        <table class="result-table small" id="alertCrowdingTable"><thead></thead><tbody></tbody></table></div>
+
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="chains" title="点击选入/踢出该模块（同步上方勾选）">⛓️ 产业链传导 · 上游涨了买中游</h3>
+        <div class="sec-purpose">回答：上游涨价后，哪些中游板块还没跟上？上游/中游各环节实时 5 日涨幅与资金，标出「时滞机会」。<b>只列为观察链</b>，不等同因果。</div>
+        <table class="result-table small" id="alertChainTable"><thead></thead><tbody></tbody></table></div>
+
+      <div class="sim-block" id="macroOuterBlock" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="chains" title="点击选入/踢出该模块（同步上方勾选）">🧭 宏观雷达 · 外部环境往哪走</h3>
+        <div class="sec-purpose">回答：近端快讯里外部环境在往哪个方向走？只做「有回波才显示」的主题归类 + 方向信号，<b>新闻词频粗筛，不是利率预测</b>。</div>
+        <div class="hint" id="macroNarrative" style="margin-bottom:8px"></div>
+        <div class="macro-grid" id="macroCards"></div></div>
+
+      <div class="sim-block" id="natOuterBlock"><h3 class="sec-toggle" data-sec="national" title="点击选入/踢出该模块（同步上方勾选）">🏛️ 国家队资金 · 谁在长期持有</h3>
+        <div class="sec-purpose">回答：国家队（ETF/汇金/社保/证金）长期拿着哪些票？口径是<b>最新报告期前十大股东名单</b>（持股≥1000 万股），季报级数据、不反映当日买卖。</div>
         <div class="hint" id="natReportDate" style="margin-bottom:6px"></div>
         <details class="nat-fold"><summary>📊 国家队 ETF 持仓（宽基）<span class="nat-cnt" id="natCntEtf"></span></summary>
           <div class="nat-scroll"><table class="result-table small" id="alertNatEtfTable"><thead></thead><tbody></tbody></table></div></details>
@@ -605,19 +735,16 @@
           <div class="nat-scroll"><table class="result-table small" id="alertNatSsfTable"><thead></thead><tbody></tbody></table></div></details>
         <details class="nat-fold"><summary>🛡️ 中国证金<span class="nat-cnt" id="natCntZjj"></span></summary>
           <div class="nat-scroll"><table class="result-table small" id="alertNatZjjTable"><thead></thead><tbody></tbody></table></div></details></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="foreign" title="点击选入/踢出该模块（同步上方勾选）">🌍 外资（北向）重仓</h3>
+      <div class="sim-block"><h3 class="sec-toggle" data-sec="foreign" title="点击选入/踢出该模块（同步上方勾选）">🌍 外资重仓 · 北向在买什么</h3>
+        <div class="sec-purpose">回答：北向资金持股市值最高的票是哪些？按持股市值 Top N，反映外资长期偏好。</div>
         <table class="result-table small" id="alertForeignTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="crowding" title="点击选入/踢出该模块（同步上方勾选）">🔥 拥挤度监控（高点逃离）</h3>
-        <table class="result-table small" id="alertCrowdingTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block"><h3 class="sec-toggle" data-sec="chains" title="点击选入/踢出该模块（同步上方勾选）">⛓️ 产业链传导雷达</h3>
-        <table class="result-table small" id="alertChainTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block" id="macroOuterBlock" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="chains" title="点击选入/踢出该模块（同步上方勾选）">🧭 宏观雷达（新闻主题扫描 · 无回波不显示）</h3>
-        <div class="hint" id="macroNarrative" style="margin-bottom:8px"></div>
-        <div class="macro-grid" id="macroCards"></div></div>
-      <div class="sim-block" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">🎋 特殊概念（名字玄学 / 谐音梗 / 生肖字辈）</h3>
+
+      <div class="sim-block" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">🎋 特殊概念 · 名字玄学（情绪题材）</h3>
+        <div class="sec-purpose">回答：今天有没有「名字玄学」在动？三档判定 —— <b>🔴触发</b>（组内整体跑赢全市场）/ <b>🟡异动</b>（只有少数个股冲板，组内其实跑输，别当整体行情）/ <b>⚪观察</b>（未达门槛）。<b>纯情绪题材，不是买入建议。</b></div>
         <div class="hint" id="specialHint" style="margin-bottom:6px"></div>
         <table class="result-table small" id="alertSpecialTable"><thead></thead><tbody></tbody></table></div>
-      <div class="sim-block" style="grid-column: 1 / -1"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">📈 特殊概念 · 命中个股明细</h3>
+      <div class="sim-block" style="grid-column: 1 / -1" id="specStockBlock"><h3 class="sec-toggle" data-sec="special" title="点击选入/踢出该模块（同步上方勾选）">📈 特殊概念 · 真在动的票
+        <span class="sec-badge" style="margin-left:8px">只列大涨或量比≥1.5 的，僵尸票不占版面</span></h3>
         <table class="result-table small" id="alertSpecialStockTable"><thead></thead><tbody></tbody></table></div>
     </div>
   </section>

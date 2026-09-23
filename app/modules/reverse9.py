@@ -20,7 +20,7 @@ N=1 只留「还差 1 天」；N=3 放宽到「还差 3 天以内」。c=9（今
 
 程序二：历史反转时点统计（对程序一筛出的股票）
 ============================================
-拉取长历史（hist.db 全历史 ∪ unified daily 补齐最新，两者同为不复权口径，
+拉取长历史（hist.db 全历史 ∪ unified daily 补齐最新，两者同为前复权口径，
 实测重叠区间逐行相等），找出历史上全部买入九转 / 卖出九转信号日 i，
 再在**对称窗口** [i-W, i+W] 内定位「股票真正开始反转」的时间节点 j：
   买入九转：j = 窗口内**最低价**所在日  → n = j - i
@@ -298,9 +298,9 @@ def screen(cfg: dict, exchange: Optional[str], sectors: Optional[list],
 # ================================================================ 程序二
 def _load_history(rconn: sqlite3.Connection, code: str, hist_bars: int,
                   ref_date: str) -> tuple:
-    """长历史：hist.db（全历史，不复权）∪ unified daily（补齐最新）。
+    """长历史：hist.db（全历史，前复权）∪ unified daily（补齐最新）。
 
-    实测两库重叠区间逐行相等（同为不复权），可安全合并；unified 侧只取
+    实测两库重叠区间逐行相等（同为前复权），可安全合并；unified 侧只取
     hist 最后日期之后的增量，避免重复行。
     **两库都必须截到 ref_date**：hist.db 的部分股票已同步到 ref_date 之后，
     若不过滤，历史会越过「当前计数」的基准日，凭空多出一段相对未来，

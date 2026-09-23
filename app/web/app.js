@@ -85,6 +85,9 @@ const API = {
   snapRun: body => fetchJSON('/api/snap/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
   r9Meta: () => fetchJSON('/api/r9/meta', {}, 20000),
   r9Run: body => fetchJSON('/api/r9/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 900000, true),
+  betonMeta: () => fetchJSON('/api/beton/meta', {}, 20000),
+  betonRun: body => fetchJSON('/api/beton/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 900000, true),
+  betonKline: (code, years) => fetchJSON(`/api/beton/kline?code=${encodeURIComponent(code)}&years=${years || 12}`, {}, 60000),
   antRun: body => fetchJSON('/api/ant/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 600000, true),
   ant1000Run: body => fetchJSON('/api/ant1000/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 3600000, true),
   ant1000Cache: () => fetchJSON('/api/ant1000/cache', {}, 30000),
@@ -172,7 +175,9 @@ const thsLink = code => `https://stockpage.10jqka.com.cn/${code}/`;
 const state = { range: 'all', sectors: [], syncPoll: null, syncing: false };
 
 // ========= 表格渲染（动态列） =========
-const PCT_RE = /涨跌幅|涨幅|幅度|涨跌|超额|收益|振幅|回撤|回报/i;
+// 列名踩中此正则才会按正负做红绿着色（中国习惯：涨红跌绿）。新增涨跌类列命名时
+// 务必含「涨跌幅/涨幅/幅度/涨跌/超额/收益/振幅/回撤/回报/宽度/净流入」之一。
+const PCT_RE = /涨跌幅|涨幅|幅度|涨跌|超额|收益|振幅|回撤|回报|宽度|净流入/i;
 function renderTable(tableId, rows, opts = {}) {
   const t = $('#' + tableId);
   if (!t) return;
@@ -413,6 +418,7 @@ function switchTab(name, noPush) {
   const panel = $('#tab-' + name);
   if (panel) panel.classList.add('active');
   if (name === 'bili' && typeof initBili === 'function') initBili();
+  if (name === 'beton' && typeof initBeton === 'function') initBeton();
 }
 
 function bindTabs() {
@@ -584,7 +590,10 @@ function snapCfg() {
     cycle_lookback: num('#snapCycleLookback', 180),
     min_amt20_yi: num('#snapMinAmt', 1),
     min_mktcap_yi: num('#snapMinMktcap', 30),
-    min_vol20: pct('#snapMinVol', 30),
+    // v2：波动率门槛默认 0（关闭）。后端默认值也改成 0 —— 原 30% 会误杀
+    // 「长期低波动后即将爆发」的标的（实测 300475 @2025-08-01 因此被剔除，
+    // 而它此后 60 日 +330.5%）。留 0 表示不启用硬门槛。
+    min_vol20: pct('#snapMinVol', 0),
     min_listed_days: num('#snapMinListed', 250),
     min_price: num('#snapMinPrice', 3),
     max_price: num('#snapMaxPrice', 400),
@@ -614,9 +623,13 @@ async function runSnap() {
       Object.entries(data.skip_stats || {}).map(([k, v]) => `${k}:${v}`).join(' · ') || '按总分降序');
     renderTable('snapTable', results.map(r => ({
       '代码': r.code, '名称': r.name, '模式': r.modes, '总分': r.score,
+      // v2：把「临界触发」单列出来 —— 需求 b/d 的核心是「1-2 天内」，
+      // 状态达标但触发 0 的票（`0/5`）应当一眼可见。
+      '临界触发': `${r.trigger_n || 0}/5`,
       '均振幅%': nf(r.amp_pct), '周期数': nf(r.n_cycles),
       '区间位置': r.pos120, '量能分位': r.vol_rank, '回撤%': r.dd250_pct,
-      '反弹幅度%': nf(r.rebound_pct), '距年线%': nf(r.ma250_dev_pct),
+      '反弹幅度%': nf(r.rebound_pct), '动能持续': nf(r.persist),
+      '距年线%': nf(r.ma250_dev_pct),
       '触发要点': r.state, '收盘': r.close,
     })), { max: 300 });
   } catch (e) {
@@ -908,6 +921,679 @@ function downloadR9Csv() {
   a.download = '9Reverse9_' + new Date().toISOString().slice(0, 10) + '.csv';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+// ========= Bet on · 长期布局（年度级趋势） =========
+// 折叠态：排名 + 代码 + 名称 + 买点档徽章 + 状态徽章 + 评分 + 周期时长 + 目标价 + 「详细 ▾」
+// 展开态（懒渲染）：得分构成 / 入选理由 / 历史周期档案 / 行业视角 / 上游期货联动 /
+//                基本面快照 / 卖出纪律 / 提醒 / 长期走势图
+let _boLast = null;
+let _boAllOpen = false;
+let _boMeta = null;
+let _boLastWatch = [];
+
+const BO_COMP_ORDER = ['q_state', 'q_left', 'q_trend', 'q_mom', 'q_vol', 'q_hist', 'q_room'];
+const BO_COMP_NAME = {
+  q_state: '趋势状态分', q_left: '位置分', q_trend: '趋势质量分', q_mom: '动量健康分',
+  q_vol: '量能配合分', q_hist: '历史体质分', q_room: '空间与风控分',
+};
+
+function boCfg() {
+  const states = [];
+  [['#boStAbove', 'ABOVE'], ['#boStExtend', 'EXTEND'], ['#boStTurning', 'TURNING'],
+   ['#boStBelow', 'BELOW'], ['#boStMixed', 'MIXED']].forEach(([sel, key]) => {
+    const el = $(sel);
+    if (el && el.checked) states.push(key);
+  });
+  return {
+    min_score: num('#boMinScore', 65),
+    tier: $('#boTier') ? $('#boTier').value : '',
+    states: states.length ? states : ['ABOVE', 'EXTEND', 'TURNING', 'BELOW'],
+    max_results: num('#boMaxResults', 300),
+    min_dur_days: num('#boMinDur', 0),
+    with_futures: $('#boWithFutures') ? $('#boWithFutures').checked : true,
+    hist_years: num('#boHistYears', 12),
+    long_gain: num('#boLongGain', 80) / 100,
+    long_days: num('#boLongDays', 250),
+    dd_deep: num('#boDdDeep', 45) / 100,
+    down_confirm: num('#boDownConfirm', 10),
+    cycle_min_gain: num('#boCycleMinGain', 30) / 100,
+    min_amt20_yi: num('#boMinAmt', 1),
+    min_mktcap_yi: num('#boMinMktcap', 30),
+    min_listed_days: num('#boMinListed', 400),
+    min_price: num('#boMinPrice', 3),
+    max_price: num('#boMaxPrice', 3000),
+    exclude_st: $('#boExcludeST') ? $('#boExcludeST').checked : true,
+  };
+}
+
+const boNum = (v, d = 2) => (v == null || !Number.isFinite(Number(v)))
+  ? '—' : Number(v).toFixed(d);
+const boPct = (v, d = 1) => (v == null || !Number.isFinite(Number(v)))
+  ? '—' : `${Number(v) >= 0 ? '+' : ''}${(Number(v) * 100).toFixed(d)}%`;
+const boTierCls = t => ({ T1: 'bo-t1', T2: 'bo-t2', T3: 'bo-t3', T4: 'bo-t4' }[t] || 'bo-t4');
+const BO_TIER_NAME = { T1: '启动前埋伏', T2: '山腰确认', T3: '加速/已走远', T4: '观察' };
+const boTierName = t => BO_TIER_NAME[t] || '';
+const boStateCls = s => ({ ABOVE: 'bo-s-above', EXTEND: 'bo-s-extend', TURNING: 'bo-s-turning',
+                           BELOW: 'bo-s-below', MIXED: 'bo-s-mixed' }[s] || 'bo-s-mixed');
+// 观察榜渲染上限（宽松轨条数多，限制一次生成的 DOM 量）
+const BO_WATCH_RENDER_MAX = 200;
+
+// ---- 展开区：得分构成 ----
+function boCompHtml(r) {
+  const meta = (_boMeta && _boMeta.weights) || [];
+  const wmap = {};
+  meta.forEach(w => { wmap[w.key] = w; });
+  const rows = BO_COMP_ORDER.map(k => {
+    const q = (r.components || {})[k];
+    const w = (wmap[k] && wmap[k].w) || 0;
+    const val = (q == null) ? 0 : q;
+    const contrib = val * w * 100;
+    const pct = Math.max(0, Math.min(100, val * 100));
+    const title = (wmap[k] && wmap[k].note) || '';
+    return `<div class="bo-comp" title="${escHtml(title)}">
+      <span class="bo-comp-name">${BO_COMP_NAME[k] || k}<i>权重 ${(w * 100).toFixed(0)}%</i></span>
+      <span class="bo-comp-bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+      <span class="bo-comp-val">${val.toFixed(2)}<i>贡献 ${contrib.toFixed(1)}</i></span>
+    </div>`;
+  }).join('');
+  let pen = '';
+  if ((r.penalties || []).length) {
+    pen = `<div class="bo-pen"><b>折扣（只影响排序与展示，不参与判档）：</b>`
+      + r.penalties.map(p => `<div class="bo-pen-row">×${p.factor} — ${p.why}</div>`).join('')
+      + `<div class="bo-pen-row">合计系数 ×${r.penalty}：原始分 ${r.raw_score} → 最终分 `
+      + `<b>${r.score}</b></div></div>`;
+  } else {
+    pen = `<div class="bo-pen bo-pen-none">无折扣（未触发过热 / 假启动 / 波动过热 / 短历史）·
+      原始分 ${r.raw_score} → 最终分 <b>${r.score}</b></div>`;
+  }
+  return `<section class="bo-sec"><h4>① 得分构成（0~100）</h4>${rows}${pen}</section>`;
+}
+
+// ---- 展开区：入选理由 ----
+function boReasonHtml(r) {
+  const li = (r.reasons || []).map(t => `<li>${t}</li>`).join('');
+  return `<section class="bo-sec"><h4>② 为什么选它 / 为什么分高</h4>
+    <ul class="bo-reasons">${li}</ul></section>`;
+}
+
+// ---- 展开区：历史周期档案 ----
+function boCycleHtml(r) {
+  const st = r.cycle_stats || {};
+  const cv = r.cur_cycle;
+  const rows = (r.cycles || []).map(x => `<tr>
+      <td class="bo-mono">${x.start}</td><td class="bo-mono">${x.peak}</td>
+      <td class="bo-mono">${x.end}</td>
+      <td class="num ${x.gain_pct >= 0 ? 'up' : 'down'}">${x.gain_pct >= 0 ? '+' : ''}${x.gain_pct}%</td>
+      <td class="num">${x.days}</td>
+      <td class="num down">${x.max_dd_pct}%</td>
+      <td>${x.long ? '<b class="bo-tag-long">长周期</b>' : ''}</td></tr>`).join('');
+  const head = `<div class="bo-stat-line">
+      <span>历史上涨段 <b>${st.n || 0}</b> 段</span>
+      <span>其中长周期（≥80% 且 ≥250 日）<b>${st.n_long || 0}</b> 段</span>
+      ${st.gain_med != null ? `<span>中位涨幅 <b>${(st.gain_med * 100).toFixed(0)}%</b></span>` : ''}
+      ${st.days_med != null ? `<span>中位时长 <b>${Math.round(st.days_med)}</b> 日</span>` : ''}
+      ${st.dd_med != null ? `<span>中位最大回撤 <b>${(st.dd_med * 100).toFixed(0)}%</b></span>` : ''}
+    </div>`;
+  const curTxt = cv ? `<div class="bo-cur">当前正处在本轮上涨段：起点 <b>${cv.start}</b>
+      （起点价 ${cv.start_c} 元）· 已走 <b>${cv.elapsed}</b> 个交易日 ·
+      最高涨幅 <b class="${cv.gain_pct >= 0 ? 'up' : 'down'}">${cv.gain_pct >= 0 ? '+' : ''}${cv.gain_pct}%</b> ·
+      段内最大回撤 <b class="down">${cv.max_dd_pct}%</b></div>`
+    : `<div class="bo-cur bo-cur-none">当前<b>不在</b>可确认的上涨段内（MA60 未站稳 MA120 上方）。</div>`;
+  const warn = `<div class="bo-warn-inline">⚠ 上面的周期是 v4 趋势状态机在<strong>全历史</strong>上切出来的，
+    切段必须用到「这段行情后来如何收场」的信息 —— 它是<strong>标签</strong>，不是信号，
+    只用来统计这只股票的历史体质与节奏，<strong>不参与买入评分</strong>。</div>`;
+  return `<section class="bo-sec"><h4>③ 历史周期档案（该股自己的上涨段）</h4>
+    ${head}${curTxt}
+    <div class="bo-table-wrap"><table class="result-table small">
+      <thead><tr><th>起点</th><th>段内最高点</th><th>段结束</th><th>涨幅</th>
+        <th title="起点 → 段内最高点的交易日数">到顶天数</th><th>段内最大回撤</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7">暂无合格上涨段</td></tr>'}</tbody>
+    </table></div>${warn}</section>`;
+}
+
+// ---- 展开区：行业视角 ----
+function boSectorHtml(r) {
+  const n = r.sector_n, r120 = r.sector_ret120, r250 = r.sector_ret250;
+  return `<section class="bo-sec"><h4>④ 所在行业</h4>
+    <div class="bo-kv">
+      <span>所属板块</span><b>${escHtml(r.sector || '—')}</b>
+      <span>同行业入选</span><b>${n == null ? '—' : n + ' 只'}</b>
+      <span>行业中期动量（候选池中位 ret120）</span>
+      <b class="${(r120 || 0) >= 0 ? 'up' : 'down'}">${boPct(r120)}</b>
+      <span>行业长期动量（候选池中位 ret250）</span>
+      <b class="${(r250 || 0) >= 0 ? 'up' : 'down'}">${boPct(r250)}</b>
+    </div>
+    <div class="bo-note">口径说明：行业动量取自<strong>本次扫描中该行业所有通过硬门槛的股票</strong>
+      （不是全行业），用来判断这只股票是「行业贝塔带动」还是「个股独立走强」。
+      若该股评分明显高于行业中位而行业动量为负，更可能是个股逻辑驱动。</div>
+  </section>`;
+}
+
+// ---- 展开区：上游期货联动 ----
+function boFuturesHtml(r, futMeta) {
+  const rows = r.futures || [];
+  if (!rows.length) {
+    const noMap = ((futMeta && futMeta.no_mapping) || []).indexOf(r.sector) >= 0;
+    return `<section class="bo-sec"><h4>⑤ 上游商品期货联动</h4>
+      <div class="bo-note">${noMap
+        ? `「${escHtml(r.sector || '该行业')}」<strong>没有直接对应的商品期货品种</strong>
+           （它的成本/售价不锚定任何单一商品），因此无法给出产业因果提示。
+           若要观察整体风险偏好，可参考股指期货（IF/IC/IM），但那属于市场层面、不是行业因果。`
+        : `本次未取到该行业的期货数据（可能网络不通，或在参数里关掉了「拉取上游商品期货」）。`}</div>
+    </section>`;
+  }
+  const body = rows.map(x => {
+    const vc = x.verdict === '顺风' ? 'up' : (x.verdict === '逆风' ? 'down' : '');
+    return `<div class="bo-fut-row">
+      <span class="bo-fut-name">${escHtml(x.name)}<i>${escHtml(x.symbol)}</i></span>
+      <span class="bo-fut-rel">${escHtml(x.relation_text)}</span>
+      <span class="bo-fut-chg">60日 <b class="${(x.ret60 || 0) >= 0 ? 'up' : 'down'}">${boPct(x.ret60)}</b>
+        · 120日 <b class="${(x.ret120 || 0) >= 0 ? 'up' : 'down'}">${boPct(x.ret120)}</b></span>
+      <span class="bo-fut-verdict ${vc}">${escHtml(x.verdict)}</span>
+      <span class="bo-fut-why">${escHtml(x.why)}</span>
+    </div>`;
+  }).join('');
+  return `<section class="bo-sec"><h4>⑤ 上游商品期货联动（${escHtml(r.sector || '')}）</h4>
+    ${body}
+    <div class="bo-note">方向判读：「同向利好」＝该品种价格上行通常利好本公司；
+      「成本反向」＝该品种上行通常压缩本公司毛利。走势为期货主连合约近 60 / 120 个交易日的涨跌幅
+      （数据截至 ${escHtml((rows[0] || {}).date || '—')}）。
+      <strong>相关性不等于因果</strong>，且期货价格本身也受宏观与资金影响，此处只作交叉验证的一条线索。</div>
+  </section>`;
+}
+
+// ---- 展开区：基本面快照 ----
+function boFundHtml(r) {
+  const v = r.valuation || {};
+  const divY = v.div_yield == null ? null : v.div_yield * 100;
+  return `<section class="bo-sec"><h4>⑥ 基本面与估值快照</h4>
+    <div class="bo-kv">
+      <span>PE(TTM)</span><b>${boNum(v.pe)}</b>
+      <span>PE 自身历史分位</span><b>${v.pe_pct == null ? '—' : (v.pe_pct * 100).toFixed(0) + '%'}</b>
+      <span>PB</span><b>${boNum(v.pb)}</b>
+      <span>PB 自身历史分位</span><b>${v.pb_pct == null ? '—' : (v.pb_pct * 100).toFixed(0) + '%'}</b>
+      <span>股息率</span><b>${divY == null ? '—' : divY.toFixed(2) + '%'}</b>
+      <span>最近除息日 / 每10股派现</span>
+      <b>${escHtml(v.last_ex_date || '—')}${v.cash_per_10 == null ? '' : ' / ' + v.cash_per_10 + ' 元'}</b>
+      <span>流通市值</span><b>—</b>
+    </div>
+    <div class="bo-warn-inline">⚠ <strong>本地库只有估值与分红，没有营收/利润/ROE 等财务报表数据</strong>，
+      因此「基本面」在这里只能到 PE / PB / 股息这一层。
+      行业前景也只用「行业动量 + 上游商品期货」两个侧面近似。
+      真正的公司质地（毛利率趋势、在手订单、产能、股东结构、商誉、质押）<strong>必须自行核实</strong>，
+      本模块不提供也不臆测。估值分位为 0% 表示处于自身历史最便宜的一端（数据日期
+      ${escHtml(v.snap_date || '—')}）。</div>
+  </section>`;
+}
+
+// ---- 展开区：卖出纪律 ----
+function boSellHtml(r) {
+  const s = r.sell || {};
+  const t = s.target || null;
+  let tgt = '';
+  if (t && !t.no_target) {
+    tgt = `<div class="bo-target">
+      <div class="bo-target-head">目标价区间（<b>${escHtml(t.basis.split('。')[0])}</b>）</div>
+      <div class="bo-target-grid">
+        <span>保守 P25<b>${boNum(t.conservative)}</b></span>
+        <span>中性 中位<b class="bo-tgt-mid">${boNum(t.neutral)}</b></span>
+        <span>乐观 P75<b>${boNum(t.optimistic)}</b></span>
+        <span>近端阻力 前高<b>${boNum(t.resistance)}</b></span>
+      </div>
+      <div class="bo-note">${escHtml(t.basis)}${t.resistance_note ? ' ' + escHtml(t.resistance_note) + '。' : ''}</div>
+      ${t.extreme ? `<div class="bo-warn-inline">${escHtml(t.extreme_note)}</div>` : ''}
+    </div>`;
+  } else if (t) {
+    // 样本不足时不给目标价，但**近端阻力（前高）依旧给** —— 它是可验证的第一个里程碑
+    tgt = `<div class="bo-target bo-target-none">
+      <div class="bo-target-head">目标价：本股不给（样本不足）</div>
+      ${t.resistance ? `<div class="bo-target-grid">
+        <span>近端阻力 前高<b>${boNum(t.resistance)}</b></span>
+      </div>` : ''}
+      <div class="bo-note">${escHtml(t.basis)}${t.resistance_note ? ' ' + escHtml(t.resistance_note) + '。' : ''}</div>
+    </div>`;
+  }
+  const lines = (s.lines || []).map(x => `<div class="bo-sell-line">
+      <span class="bo-sell-k">${escHtml(x.k)}</span>
+      <span class="bo-sell-v">${escHtml(x.v)}</span>
+      <span class="bo-sell-why">${escHtml(x.why)}</span>
+    </div>`).join('');
+  return `<section class="bo-sec"><h4>⑦ 建议卖出的量化指标（本股专属）</h4>
+    ${tgt}${lines}
+    <div class="bo-note">以上四条是<strong>纪律线而非预测</strong>：长周期上涨不等于低回撤，
+      run1 实测四段目标行情的最大回撤在 23%~49% 之间。事先想清楚「跌到哪条线减多少」，
+      比事后临场判断可靠得多。</div>
+  </section>`;
+}
+
+// ---- 展开区：提醒 ----
+function boWarnHtml(r) {
+  const items = [];
+  items.push(`研究档案（run1 + run2 + 两次复核）的最终结论都是 <b>RESEARCH_REJECTED</b>：
+    这套方法<strong>不足以直接用于实盘</strong>。本模块把它当<strong>筛选漏斗与纪律工具</strong>，
+    而不是「买入信号」。`);
+  if (r.state === 'EXTEND') {
+    items.push(`当前处于<b>加速段·已走远</b>：run2 实测该状态 120 日净收益均值最高（+27.6%），
+      但最大不利偏移也最深（−16.4%）—— 只宜作为<strong>已持仓的加仓参考</strong>，不宜新建重仓。`);
+  }
+  if (r.state === 'MIXED') {
+    items.push(`当前<b>无明显趋势</b>：run2 实测该状态 120 日胜率仅 43.97%、中位收益 −2.59%，
+      是全部状态中最差的回避区。`);
+  }
+  if (r.tier === 'T1') {
+    items.push(`<b>左侧埋伏档已被告知证伪</b>：run2 用无未来函数的 PIT 口径检验后，
+      「埋伏信号」的净增量只有 +1.49pp，8 年里 4 年为负，Bonferroni 校正后不显著。
+      保留此档只是因为它符合「提前布局」的诉求 —— 请务必小仓位、分步建仓，并接受较高失败率。`);
+  }
+  items.push(`<b>数据缺口</b>：长历史为<strong>前复权</strong>价（hist.db 与主库 daily 同为前复权、重叠区间逐行相等；
+    若个别源混入不复权序列会按板块涨跌停上限自动识别修复，本股兜底修复 ${r.adj_events || 0} 次）；
+    仅有主库 ~288 根日K 的股票（约 1200 只，多为 301/688/北交所新代码）
+    因不足 ${(_boMeta && _boMeta.min_bars) || 500} 根已被跳过。`);
+  items.push(`<b>幸存者偏差</b>：池子只含当前在市股票，已退市的不在内 —— 与 run1 相同的结构性缺陷，
+    无法用统计手段消除。`);
+  items.push(`<b>统计效力</b>：run1 的有效独立周期仅 13 段、run2 仅 10 只标的 8 年。
+    本模块虽然把样本扩到全市场（用<strong>该股自身历史</strong>做统计），
+    但个股层面的「周期时长」仍是低样本推断，请只看量级、不要当精确预测。`);
+  items.push(`本模块仅用于研究与教育目的，<b>不构成投资建议</b>，不承诺收益。
+    期货与估值数据来自第三方，可能存在延迟或误差。`);
+  return `<section class="bo-sec bo-sec-warn"><h4>⑧ 提醒与风险</h4>
+    <ul class="bo-warns">${items.map(x => `<li>⚠ ${x}</li>`).join('')}</ul></section>`;
+}
+
+// ---- 展开区：长期走势图 ----
+function boChartHtml(r) {
+  return `<section class="bo-sec"><h4>⑨ 长期走势图（月线 · 历史上涨段高亮）</h4>
+    <div class="bo-chart-actions">
+      <button class="btn btn-ghost bo-chart-btn" type="button" data-code="${r.code}">📈 加载走势图</button>
+      <span class="bo-note">月线收盘 + MA120/MA250；<b>绿色带</b>＝历史上涨段，<b>橙色带</b>＝进行中的段。
+        （图表按需加载，避免几百只股票一次性拉数据）</span>
+    </div>
+    <div class="bo-chart-holder"></div></section>`;
+}
+
+function boDetailHtml(r, futMeta) {
+  return boCompHtml(r) + boReasonHtml(r) + boCycleHtml(r) + boSectorHtml(r)
+    + boFuturesHtml(r, futMeta) + boFundHtml(r) + boSellHtml(r) + boWarnHtml(r)
+    + boChartHtml(r);
+}
+
+// 懒渲染：折叠态只放空壳，点开/批量展开时才生成明细 DOM
+// （不做懒加载的话，几百只 × 9 个 section ≈ 十几万节点，首屏必卡 —— 与 9Reverse9 同因）
+function boFillDetail(card) {
+  const det = card.querySelector('.bo-detail');
+  if (!det || det.children.length) return;
+  const idx = Number(det.dataset.idx);
+  const data = _boLast || {};
+  const r = (data.results || [])[idx];
+  det.innerHTML = r ? boDetailHtml(r, data.stats && data.stats.futures)
+    : '<div class="bo-empty">数据已失效，请重新扫描</div>';
+  det.querySelectorAll('.bo-chart-btn').forEach(b => b.addEventListener('click', () => {
+    const holder = b.closest('.bo-sec').querySelector('.bo-chart-holder');
+    b.disabled = true;
+    b.textContent = '加载中…';
+    loadBetonChart(b.dataset.code, holder, b);
+  }));
+}
+
+function boCard(r, idx) {
+  const t = (r.sell && r.sell.target) || {};
+  const tgt = (t && !t.no_target) ? `${boNum(t.neutral)} 元` : '不给（样本不足）';
+  const dur = (r.dur && r.dur.ok) ? r.dur.total_text : '—';
+  const durTitle = (r.dur && r.dur.basis) ? escHtml(r.dur.basis) : '';
+  const stCls = boStateCls(r.state);
+  return `<div class="bo-card">
+    <div class="bo-head">
+      <span class="bo-rank" title="排序名次">${idx + 1}</span>
+      <a href="#" class="stock-link code-link bo-code" data-code="${r.code}" title="快速查看 · 站内看K线">${r.code}</a>
+      <a href="${thsLink(r.code)}" target="_blank" rel="noopener noreferrer" class="stock-link name-link bo-name" title="详细查询 · 同花顺新窗口">${escHtml(r.name || '')}</a>
+      <span class="bo-badge ${boTierCls(r.tier)}" title="${escHtml(r.tier_name)}">${r.tier} · ${escHtml(r.tier_name)}</span>
+      <span class="bo-badge bo-st ${stCls}" title="run2 实测该状态 120 日胜率 ${r.state_winrate}%（全样本 58.35%）">${escHtml(r.state_name)} · ${r.state_winrate}%</span>
+      <span class="bo-metrics">
+        <span class="bo-metric" title="买入评分（0~100，已计入折扣）"><i>评分</i><b>${r.score}</b></span>
+        <span class="bo-metric" title="${durTitle}"><i>预估周期</i><b>${escHtml(dur)}</b></span>
+        <span class="bo-metric" title="按该股自身历史涨幅分布推算的中性目标价"><i>中性目标</i><b>${escHtml(tgt)}</b></span>
+        <span class="bo-metric" title="收盘价（数据截至 ${escHtml(r.date || '')}）"><i>现价</i><b>${boNum(r.close)}</b></span>
+        <span class="bo-metric" title="参与分析的长历史日K根数"><i>K线数</i><b>${r.bars}</b></span>
+      </span>
+      <button class="btn btn-ghost bo-expand" type="button">详细 ▾</button>
+    </div>
+    <div class="bo-detail" hidden data-idx="${idx}"></div>
+  </div>`;
+}
+
+const BO_RENDER_MAX = 300;   // 折叠行上限（CSV 仍导出全量）
+
+function renderBeton(data) {
+  const list = $('#boList');
+  const sum = $('#boSummary');
+  if (!list) return;
+  const rows = (data && data.results) || [];
+  if (!rows.length) {
+    if (sum) sum.hidden = true;
+    list.innerHTML = '<div class="bo-empty-big">— 暂无结果 —</div>';
+    return;
+  }
+  const st = (data.stats) || {};
+  const sk = (data.skip_stats) || {};
+  const p = (data.params) || {};
+  const skTxt = Object.keys(sk).length
+    ? ' · 跳过：' + Object.entries(sk).map(([k, v]) => `${k}:${v}`).join(' / ') : '';
+  const tierTxt = st.tiers
+    ? ' · 档位：' + ['T2', 'T3', 'T1', 'T4']
+      .filter(k => st.tiers[k]).map(k => `${k}:${st.tiers[k]}`).join(' / ') : '';
+  const futTxt = (st.futures && st.futures.note) ? ` · ${st.futures.note}` : '';
+  const durTxt = (st.dur_cut) ? ` · 因「预估周期」不达标剔除 ${st.dur_cut} 只` : '';
+  if (sum) {
+    sum.hidden = false;
+    sum.innerHTML = `共 <b>${rows.length}</b> 只 · 数据截止 <b>${escHtml(data.ref_date || '—')}</b>`
+      + ` · 参与分析 <b>${st.scanned || 0}</b> 只 · 最低分 <b>${p.min_score}</b>`
+      + ` · 用时 <b>${data.elapsed || 0}s</b>`
+      + `<span class="bo-sum-note">${tierTxt}${durTxt}${skTxt}${futTxt}</span>`;
+  }
+  const shown = rows.slice(0, BO_RENDER_MAX);
+  _boLast = data;
+  list.innerHTML = shown.map((r, i) => boCard(r, i)).join('')
+    + (rows.length > shown.length
+      ? `<div class="bo-more">仅渲染前 ${shown.length} / 共 ${rows.length} 只（不影响 CSV 导出）</div>`
+      : '');
+  list.querySelectorAll('.code-link').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    switchTab('kline');
+    $('#klineCode').value = a.dataset.code;
+    loadKline();
+  }));
+  list.querySelectorAll('.bo-expand').forEach(b => b.addEventListener('click', () => {
+    const card = b.closest('.bo-card');
+    const det = card.querySelector('.bo-detail');
+    const willOpen = det.hidden;
+    if (willOpen) boFillDetail(card);
+    det.hidden = !willOpen;
+    b.textContent = willOpen ? '收起 ▴' : '详细 ▾';
+  }));
+  renderBetonWatch(data);
+}
+
+// 观察榜（宽松轨）—— 与主榜严格分离，带显著的「未经证实」警示条
+function renderBetonWatch(data) {
+  const box = $('#boWatch');
+  if (!box) return;
+  const rows = (data && data.watch) || [];
+  if (!rows.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  _boLastWatch = rows;
+  const meta = _boMeta || {};
+  const shown = rows.slice(0, BO_WATCH_RENDER_MAX);
+  box.innerHTML = `
+    <div class="bo-watch-head">
+      <div class="bo-watch-title">🔍 长期形态观察榜
+        <span class="bo-watch-cnt">共 ${rows.length} 只</span></div>
+      <div class="bo-watch-warn">
+        ⚠ 宽松轨 · <b>不是推荐</b>：只按「长期形态」筛选，不设分数门槛、未做显著性检验。
+        封段回测实测本模块主榜分数的 Spearman IC ≈ 0（未来 120 日 −0.002 / 250 日 −0.018），
+        即<b>基于价格的形态特征无法稳定预测未来 250 日收益</b>（与两份研究档案的
+        RESEARCH_REJECTED 结论一致）。此处仅提供研究线索，请配合主榜与卖出纪律线使用。
+      </div>
+      <div class="bo-watch-crit">判据：${(meta.watch_criteria || []).map(escHtml).join('　·　')}</div>
+    </div>
+    <div class="bo-watch-list">${shown.map((r, i) => boWatchCard(r, i)).join('')}</div>
+    ${rows.length > shown.length
+      ? `<div class="bo-more">仅渲染前 ${shown.length} / 共 ${rows.length} 只（不影响 CSV 导出）</div>`
+      : ''}`;
+  box.querySelectorAll('.code-link').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    switchTab('kline');
+    $('#klineCode').value = a.dataset.code;
+    loadKline();
+  }));
+}
+
+function boWatchCard(r, i) {
+  const dev = (r.px_ma250 == null) ? '—' : (r.px_ma250 * 100).toFixed(1) + '%';
+  const fl = (r.loose_bull_60 == null) ? '—' : (r.loose_bull_60 * 100).toFixed(0) + '%';
+  const pos = (r.pos250 == null) ? '—' : r.pos250.toFixed(2);
+  const stCls = boStateCls(r.state);
+  return `<div class="bo-watch-card">
+    <span class="bo-rank">${i + 1}</span>
+    <span class="code-link" data-code="${escHtml(r.code)}">${escHtml(r.code)}</span>
+    <span class="bo-name">${escHtml(r.name || '')}</span>
+    <span class="bo-badge ${boTierCls(r.tier)}">${escHtml(r.tier)} ${escHtml(boTierName(r.tier))}</span>
+    <span class="bo-st ${stCls}">${escHtml(r.state_name || r.state || '')}</span>
+    <span class="bo-shape">形态分 <b>${r.shape_score}</b></span>
+    <span class="bo-watch-kv">年线偏离 ${dev}</span>
+    <span class="bo-watch-kv">多头占比 ${fl}</span>
+    <span class="bo-watch-kv">区间位置 ${pos}</span>
+  </div>`;
+}
+
+function boToggleAll() {
+  const cards = $$('#boList .bo-card');
+  if (!cards.length) return;
+  _boAllOpen = !_boAllOpen;
+  if (_boAllOpen) cards.forEach(boFillDetail);
+  cards.forEach(c => {
+    c.querySelector('.bo-detail').hidden = !_boAllOpen;
+    const b = c.querySelector('.bo-expand');
+    if (b) b.textContent = _boAllOpen ? '收起 ▴' : '详细 ▾';
+  });
+  const btn = $('#btnBetonExpandAll');
+  if (btn) btn.textContent = _boAllOpen ? '⇕ 全部收起' : '⇕ 全部展开';
+}
+
+async function runBeton() {
+  hideMeme('boMeme');
+  const cfg = boCfg();
+  showOverlay('loading', 'Bet on：读取长历史（hist.db）→ 合并主库 → PIT 状态与因子 → 历史周期统计…', { cancellable: true });
+  try {
+    const data = await API.betonRun({ cfg, exchange: rangeVal() });
+    hideOverlay();
+    if (data && data.error) {
+      showMeme('boMeme', 'error', '扫描失败', String(data.error));
+      renderBeton({ results: [] });
+      return;
+    }
+    _boLast = data;
+    const rows = (data && data.results) || [];
+    if (!rows.length) {
+      showMeme('boMeme', 'empty', '这轮没有符合条件的股票',
+        '把最低分下调、勾上更多趋势状态，或换一个范围再试');
+      renderBeton(data);
+      return;
+    }
+    const top = rows.slice(0, 3).map(r => `${r.name || r.code}`).join('、');
+    showMeme('boMeme', 'success', `${rows.length} 只进入 Bet on 名单 🎯`,
+      `最优：${top} · 主推档 ${(data.stats.tiers || {}).T2 || 0} 只 · 数据截止 ${data.ref_date || '—'}`);
+    renderBeton(data);
+  } catch (e) {
+    hideOverlay();
+    if (_userCancelled) { showMeme('boMeme', 'farewell', '已取消这次扫描', '随时可以重新开始'); return; }
+    showMeme('boMeme', 'error', '请求失败', String(e));
+  }
+}
+
+// 长期走势图：月线 + 历史上涨段背景带 + MA120/MA250
+async function loadBetonChart(code, holder, btn) {
+  try {
+    const d = await API.betonKline(code, num('#boHistYears', 12));
+    if (!d || !d.ok) {
+      holder.innerHTML = `<div class="bo-empty">${escHtml((d && d.error) || '没有可用的长历史数据')}</div>`;
+      if (btn) { btn.disabled = false; btn.textContent = '📈 加载走势图'; }
+      return;
+    }
+    holder.innerHTML = `<canvas class="bo-chart" width="640" height="260"></canvas>
+      <div class="bo-chart-legend">${
+      (d.spans || []).map(x => `<span class="bo-lg-item"><i class="bo-lg-band"></i>
+        ${x.from} → ${x.to}　+${x.gain_pct}% / ${x.days} 日${x.long ? '（长周期）' : ''}</span>`).join('')
+    }${d.cur ? `<span class="bo-lg-item bo-lg-cur"><i class="bo-lg-band bo-lg-band-cur"></i>
+        进行中：${d.cur.from} 起，已 ${d.cur.elapsed} 日 / ${d.cur.gain_pct >= 0 ? '+' : ''}${d.cur.gain_pct}%</span>` : ''}</div>`;
+    const cv = holder.querySelector('canvas');
+    drawBetonChart(cv, d);
+    cv.style.cursor = 'zoom-in';
+    cv.title = '点击在新窗口打开高清大图';
+    cv.addEventListener('click', () => openChartWindow(cv, `${code} 长期走势（月线）`));
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 重新加载'; }
+  } catch (e) {
+    holder.innerHTML = `<div class="bo-empty">走势图加载失败：${escHtml(String(e))}</div>`;
+    if (btn) { btn.disabled = false; btn.textContent = '📈 加载走势图'; }
+  }
+}
+
+function drawBetonChart(cv, d) {
+  const { ctx, W, H } = hiDPI(cv, 2);
+  const series = [
+    { key: 'close', data: d.close || [], color: '#b86b3f', w: 1.8, label: '月线收盘' },
+    { key: 'ma120', data: d.ma120 || [], color: '#5b7c9d', w: 1.1, label: 'MA120' },
+    { key: 'ma250', data: d.ma250 || [], color: '#8a8a8a', w: 1.1, label: 'MA250' },
+  ];
+  const n = (d.dates || []).length;
+  if (n < 2) { ctx.fillStyle = '#a3a3a3'; ctx.fillText('数据不足', 12, 20); return; }
+  const vals = [];
+  series.forEach(s => s.data.forEach(v => { if (Number.isFinite(v) && v > 0) vals.push(v); }));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) { lo = 0; hi = 1; }
+  const pad = (hi - lo) * 0.08 || 1;
+  lo = Math.max(0, lo - pad); hi += pad;
+  const L = 44, R = 8, T = 8, B = 18;
+  const pw = W - L - R, ph = H - T - B;
+  const X = i => L + (i / (n - 1)) * pw;
+  const Y = v => T + ph - ((v - lo) / (hi - lo)) * ph;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // 历史上涨段背景带（绿色）/ 进行中的段（橙色）
+  const step = d.step || 21;
+  (d.spans || []).forEach(sp => {
+    const x0 = X(Math.max(0, Math.min(n - 1, sp.i0 / step)));
+    const x1 = X(Math.max(0, Math.min(n - 1, sp.i1 / step)));
+    ctx.fillStyle = 'rgba(46,139,87,0.10)';
+    ctx.fillRect(Math.min(x0, x1), T, Math.max(1.5, Math.abs(x1 - x0)), ph);
+  });
+  if (d.cur) {
+    const x0 = X(Math.max(0, Math.min(n - 1, d.cur.i0 / step)));
+    ctx.fillStyle = 'rgba(184,107,63,0.16)';
+    ctx.fillRect(Math.min(x0, X(n - 1)), T, Math.max(1.5, Math.abs(X(n - 1) - x0)), ph);
+  }
+
+  // 网格 + Y 轴刻度
+  ctx.strokeStyle = '#eeebe2'; ctx.lineWidth = 1;
+  ctx.font = '10px sans-serif'; ctx.fillStyle = '#a3a3a3'; ctx.textAlign = 'right';
+  for (let k = 0; k <= 3; k++) {
+    const v = lo + (hi - lo) * k / 3, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+    ctx.fillText(v.toFixed(v >= 100 ? 0 : 2), L - 5, y + 3.5);
+  }
+  // X 轴首末日期
+  ctx.textAlign = 'left';
+  ctx.fillText((d.dates[0] || '').slice(0, 7), L, H - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText((d.dates[n - 1] || '').slice(0, 7), W - R, H - 5);
+
+  // 折线
+  series.forEach(s => {
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.w;
+    ctx.beginPath();
+    let started = false;
+    s.data.forEach((v, i) => {
+      if (!Number.isFinite(v) || v <= 0) { started = false; return; }
+      const px = X(i), py = Y(v);
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  });
+
+  // 图例
+  let lx = L + 4;
+  ctx.textAlign = 'left'; ctx.font = '10px sans-serif';
+  series.forEach(s => {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, T + 2, 10, 2.5);
+    ctx.fillStyle = '#6b6b6b';
+    ctx.fillText(s.label, lx + 13, T + 6.5);
+    lx += 13 + ctx.measureText(s.label).width + 14;
+  });
+}
+
+// CSV：总表 + 得分构成 + 历史周期明细
+function downloadBetonCsv() {
+  const d = _boLast;
+  if (!d || !((d.results || []).length)) {
+    showMeme('boMeme', 'ask', '还没有可导出的结果', '先点「开始扫描」');
+    return;
+  }
+  const head = ['排名', '代码', '名称', '板块', '评分', '原始分', '折扣', '买点档', '状态',
+    '状态120日胜率%', '现价', '预估周期', '周期区间', '中性目标', '保守目标', '乐观目标',
+    '前高', '目标样本数', 'K线数', '除权修复次数',
+    ...BO_COMP_ORDER.map(k => BO_COMP_NAME[k]),
+    '历史上涨段数', '长周期段数', '中位涨幅%', '中位时长日', '中位最大回撤%', '本轮涨幅%', '本轮已走日'];
+  const lines = d.results.map((r, i) => {
+    const t = (r.sell && r.sell.target) || {};
+    const st = r.cycle_stats || {};
+    const cv = r.cur_cycle || {};
+    return [i + 1, r.code, r.name, r.sector, r.score, r.raw_score, r.penalty, r.tier,
+      r.state_name, r.state_winrate, r.close,
+      (r.dur && r.dur.ok) ? r.dur.total_text : '', (r.dur && r.dur.ok) ? r.dur.range_text : '',
+      t.no_target ? '' : t.neutral, t.no_target ? '' : t.conservative,
+      t.no_target ? '' : t.optimistic, t.resistance, t.count, r.bars, r.adj_events,
+      ...BO_COMP_ORDER.map(k => (r.components || {})[k]),
+      st.n, st.n_long,
+      st.gain_med == null ? '' : (st.gain_med * 100).toFixed(1),
+      st.days_med == null ? '' : Math.round(st.days_med),
+      st.dd_med == null ? '' : (st.dd_med * 100).toFixed(1),
+      cv.gain_pct, cv.elapsed].map(csvCell).join(',');
+  });
+  const meta = [
+    ['口径', '研究结论', 'run1 DSR=0.8107<0.95、run2 埋伏增量+1.49pp，两轮均为 RESEARCH_REJECTED'],
+    ['口径', '状态表（run2 §4.1）', Object.entries((d.stats || {}).state_winrate || {})
+      .map(([k, v]) => `${k}=${v}%`).join(' / ')],
+    ['口径', '折扣系数', `过热${0.8} / 假启动${0.75} / 波动过热${0.9} / 短历史${0.85} / 震荡区${0.85}`],
+    ['口径', '长历史来源', (d.stats || {}).hist_db + '（前复权；跳空修复为兜底）'],
+    ['口径', '跳过统计', Object.entries(d.skip_stats || {}).map(([k, v]) => `${k}=${v}`).join(' / ')],
+  ].map(r => r.map(csvCell).join(','));
+  const tail = ['', '—— 历史上涨段明细 ——', '代码,名称,起点,段内最高点,段结束,涨幅%,到顶天数,段内最大回撤%,是否长周期'];
+  d.results.forEach(r => {
+    (r.cycles || []).forEach(x => tail.push([r.code, r.name, x.start, x.peak, x.end,
+      x.gain_pct, x.days, x.max_dd_pct, x.long ? '是' : ''].map(csvCell).join(',')));
+  });
+  const idetail = ['', '—— 入选理由 ——', '代码,名称,理由'];
+  d.results.forEach(r => (r.reasons || []).forEach(t =>
+    idetail.push([r.code, r.name, String(t).replace(/<[^>]+>/g, '')].map(csvCell).join(','))));
+  // 观察榜（宽松轨）：单独一段，并在口径里写明证据等级
+  const watch = (d.watch || []);
+  const wsec = [];
+  if (watch.length) {
+    const wmeta = [
+      ['', '—— 长期形态观察榜（宽松轨）——', ''],
+      ['口径', '声明', '只按长期形态筛选，不设分数门槛、未做显著性检验；'
+        + '实测主榜分数 Spearman IC≈0（未来120日 −0.002 / 250日 −0.018），'
+        + '形态特征无法稳定预测未来250日收益。此表仅提供研究线索，不是推荐。'],
+      ['口径', '判据', ((_boMeta || {}).watch_criteria || []).join(' / ')],
+      ['代码', '名称', '板块,当前状态,买点档,形态分,年线偏离,中期多头占比,250日区间位置,现价'].join(','),
+    ];
+    const wlines = watch.map(x => [x.code, x.name, x.sector, x.state_name, x.tier,
+      x.shape_score, x.px_ma250, x.loose_bull_60, x.pos250, x.close]
+      .map(csvCell).join(','));
+    wsec.push(...wmeta, ...wlines);
+  }
+  const csv = '\ufeff' + [head.join(','), ...lines, ...meta, ...tail, ...idetail, ...wsec].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'BetOn_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ---- 面板元信息：首次切到该页签时拉一次（权重 / 最小K线数 / 状态表） ----
+// 懒加载而不是 init() 里同步拉，避免拖慢启动；失败时给一份兜底结构，
+// 这样「得分构成」仍能渲染（只是没有权重注释）。
+async function initBeton() {
+  if (_boMeta) return;
+  try {
+    _boMeta = await API.betonMeta();
+  } catch (e) {
+    _boMeta = { weights: [], states: [], tiers: [], min_bars: 500 };
+  }
 }
 
 // ========= 蚂蚁 =========
@@ -1349,6 +2035,7 @@ async function runAlert() {
     special: { window: num('#aSpecWindow', 3), zodiac_lead_days: num('#aSpecZodiacLead', 150),
                min_hits: num('#aSpecMinHits', 5), top_n: num('#aSpecTopN', 15),
                excess_min: num('#aSpecExcess', 1.5), limitup_ratio_min: num('#aSpecLuRatio', 2),
+               density_breadth_floor: num('#aSpecLuFloor', -5),
                surge_pct: num('#aSpecSurge', 5), standing_top_n: num('#aSpecObserve', 3) },
   };
   showOverlay('loading', `前瞻预警扫描中（联网采集）…（${estText('alert', rangeVal())}）`, { cancellable: true });
@@ -1376,7 +2063,11 @@ function renderAlert(data) {
   const cal = data.calendar || {};
   $('#alertMonthThemes').textContent =
     (cal['本月主线'] && cal['本月主线'].length) ? '本月主线：' + cal['本月主线'].join(' / ') : '';
-  renderTable('alertSignalTable', data.signals || [], { max: 100 });
+  // 核心信号：动作导向（对象/动作/时效/依据/来源）。各模块表格负责「为什么」与明细，
+  // 本表只回答「现在该做什么」，因此不再复述整段口径描述，避免与各模块重复。
+  renderTable('alertSignalTable', (data.signals || []).map(r => ({
+    '类型': r['类型'], '对象': r['对象'], '动作': r['动作'], '时效': r['时效'],
+    '关键依据': r['依据'], '来源模块': r['来源'] || '' })), { max: 100 });
   renderTable('alertCalendarTable', (cal['日历预警'] || []).map(r => ({
     '事件': r['事件'], '日期': r['日期'], '距今(天)': r['距今(天)'], '备注': r['备注'] })), { max: 50 });
   renderTable('alertWindowTable', (cal['埋伏窗口'] || []).map(r => ({
@@ -1390,7 +2081,17 @@ function renderAlert(data) {
       '5日涨幅%': r['5日涨幅%'], '5日主力净流入(亿)': r['5日主力净流入(亿)'],
       '换手分位%': r['换手分位%'] == null ? '—' : r['换手分位%'], '判定': r['判定'] })),
   ], { max: 100 });
-  renderTable('alertColdTable', data.cold || [], { max: 50 });
+  renderTable('alertColdTable', (data.cold || []).map(r => {
+    // 冷门表列名去歧义：原样输出 {板块, 冷度得分, 成交额占比%, 60日换手%, 60日涨幅%, 提示}
+    // 其中窗口天数来自后端动态键，这里统一改名为「窗口换手%/窗口涨幅%」以免与「今日换手」混淆。
+    const o = { '板块': r['板块'], '冷度得分': r['冷度得分'], '成交额占比%': r['成交额占比%'] };
+    Object.keys(r).forEach(k => {
+      if (/^\d+日换手%$/.test(k)) o['窗口换手%'] = r[k];
+      else if (/^\d+日涨幅%$/.test(k)) o['窗口涨幅%'] = r[k];
+    });
+    o['判定'] = r['提示'];
+    return o;
+  }), { max: 50 });
   // 国家队四列表：新结构 {date, groups:{etf/huijin/ssf/zhengjin:{title, rows}}}
   const nat = (data.national && data.national.groups) ? data.national : { date: '', groups: {} };
   $('#natReportDate').textContent = nat.date ? `📋 ${nat.date} 报告期 · 前十大股东名单口径 · 持股≥1000万股` : '';
@@ -1417,21 +2118,23 @@ function renderAlert(data) {
   const spConcepts = sp.concepts || [];
   const spStocks = sp.stocks || [];
   const zoo = sp.zodiac || {};
-  const spHint = $('specialHint');
+  const spHint = $('#specialHint');
   if (spHint) {
     if (!data.special) spHint.textContent = '';               // 未勾选该模块
     else if (!sp.src) spHint.textContent = '数据源不可用，本次未取得全市场行情';  // 勾了但没拿到
-    else spHint.textContent = `数据源：${sp.src} · 全市场均涨 ${sp.market_avg}%、`
-      + `涨停率 ${sp['market_lu%']}%`
-      + (zoo['当前'] ? ` · 当前生肖 ${zoo['当前']}年，下一生肖 ${zoo['下一']}年`
+    else spHint.textContent = `基准：全市场均涨 ${sp.market_avg}% · 上涨占比 ${sp['market_up%']}%`
+      + ` · 涨停率 ${sp['market_lu%']}%（${sp.src}）`
+      + (zoo['当前'] ? ` ｜ 当前生肖 ${zoo['当前']}年，下一生肖 ${zoo['下一']}年`
         + `（春节 ${zoo['春节日期']}，还有 ${zoo['距春节(天)']} 天）` : '');
   }
   const surgeHdr = '大涨(≥' + (sp.surge != null ? sp.surge : 5) + '%)';
+  // 档位：🔴触发（跑赢全市场）/ 🟡异动（少数冲板、组内跑输）/ ⚪观察
+  const gradeOf = r => r['触发'] ? '🔴 触发' : (r['异动'] ? '🟡 异动' : '⚪ 观察');
   renderTable('alertSpecialTable', spConcepts.map(r => ({
-    '概念': r['概念'], '窗口/依据': r['窗口依据'],
+    '概念': r['概念'], '档位': gradeOf(r),
     '命中': r['命中'], '上涨': r['上涨'], '涨停': r['涨停'], [surgeHdr]: r['大涨'],
-    '均涨幅%': r['均涨幅%'], '超额%': r['超额%'],
-    '最强': r['最强'], '判定': r['判定'] })), { max: 50 });
+    '均涨%': r['均涨幅%'], '超额%': r['超额%'], '宽度%': r['宽度%'],
+    '涨停密度×': r['涨停密度×'], '最强': r['最强'], '判定': r['判定'] })), { max: 50 });
   renderTable('alertSpecialStockTable', spStocks.map(r => ({
     '概念': r['概念'], '代码': r['代码'], '简称': r['简称'], '涨跌幅%': r['涨跌幅%'],
     '最新价': r['最新价'], '成交额(亿)': r['成交额(亿)'], '换手率%': r['换手率%'],
@@ -1464,6 +2167,7 @@ function renderAlert(data) {
     alertSpecialTable: spConcepts.length,
     alertSpecialStockTable: spStocks.length,
   };
+  // 各区块空数据时收起 + 计数徽章（核心信号已改为通栏，不再受 280px 网格影响）
   const hiddenNames = [];
   $$('#tab-alert .sim-block').forEach(b => {
     if (b.id === 'natOuterBlock') return;   // 国家队外块单独按四子表合计处理（见下方 natOuter）
@@ -1473,7 +2177,7 @@ function renderAlert(data) {
     b.hidden = n === 0;
     const h3 = b.querySelector('h3');
     if (!h3) return;
-    if (n === 0) { hiddenNames.push(h3.textContent.trim()); return; }
+    if (n === 0) { hiddenNames.push(h3.textContent.trim().split(' ·')[0]); return; }
     let badge = h3.querySelector('.sec-badge');
     if (!badge) { badge = document.createElement('span'); badge.className = 'sec-badge'; h3.appendChild(badge); }
     badge.textContent = n + ' 条';
@@ -2311,6 +3015,9 @@ async function init() {
   $('#btnRunR9').addEventListener('click', runR9);          // 9Reverse9 · 神奇九转
   $('#btnR9ExpandAll').addEventListener('click', r9ToggleAll);
   $('#btnR9Csv').addEventListener('click', downloadR9Csv);
+  $('#btnRunBeton').addEventListener('click', runBeton);    // Bet on · 长期布局
+  $('#btnBetonExpandAll').addEventListener('click', boToggleAll);
+  $('#btnBetonCsv').addEventListener('click', downloadBetonCsv);
   $('#btnRunAnt').addEventListener('click', runAnt);
   $('#btnRunAnt1000').addEventListener('click', runAnt1000);
   refreshAnt1000Cache();   // 长周期历史数据缓存状态（异步，失败静默）

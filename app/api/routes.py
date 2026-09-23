@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..core import db as core_db
 from ..core import ranges
 from ..core import sync as core_sync
-from ..modules import (alert, ant, ant1000, bili, conditions, cycle, futures,
+from ..modules import (alert, ant, ant1000, beton, bili, conditions, cycle, futures,
                        pattern, reverse9, similar, snap, strategies, ticker)
 
 router = APIRouter()
@@ -584,6 +584,53 @@ def reverse9_run(req: Reverse9Req):
                 "skip_stats": {}, "notes": [str(e)[:200]], "elapsed": 0.0}
     finally:
         _task_done()
+
+
+# ============ Bet on · 长期布局（年度级趋势） ============
+# 素材：用户提供的两份长周期量化研究档案（run1 识别手册 + run2 买入侧信号 + 两次独立复核）。
+# 两轮研究的最终结论都是 RESEARCH_REJECTED，本模块把其中唯一未被否掉的「状态基线」
+# （STATE_ABOVE 120 日胜率 67.94% / 最大不利偏移 −10.69%）当主锚，并把被证伪的
+# 「启动前埋伏」档明确标注为低置信度 —— 详见 app/modules/beton.py 顶部说明。
+class BetonReq(BaseModel):
+    cfg: dict = {}
+    exchange: Optional[str] = None
+    sectors: Optional[list[str]] = None
+    max_workers: int = 8
+
+
+@router.get("/api/beton/meta")
+def beton_meta():
+    """状态表（含实测胜率）/ 买点档位 / 权重 / 默认参数（前端渲染与文档用）。"""
+    try:
+        return _clean(beton.meta_info())
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e), "states": [], "tiers": [], "weights": []}
+
+
+@router.post("/api/beton/run")
+def beton_run(req: BetonReq):
+    """全市场长期布局扫描（长历史 + PIT 状态 + 历史周期 + 卖出纪律）。"""
+    _task_start("Bet on 长期布局")
+    try:
+        return _clean(beton.run(req.cfg, _norm_exchange(req.exchange),
+                                req.sectors, req.max_workers,
+                                progress_cb=_task_progress))
+    except TaskCancelled:
+        return {**_cancelled_response(), "results": [], "skip_stats": {}, "stats": {}}
+    except Exception as e:  # noqa: BLE001 —— 数据/文件异常返回 JSON 错误而非 500
+        return {"error": f"Bet on 扫描失败: {e}", "results": [],
+                "skip_stats": {}, "stats": {}, "notes": [str(e)[:300]], "elapsed": 0.0}
+    finally:
+        _task_done()
+
+
+@router.get("/api/beton/kline")
+def beton_kline(code: str = Query(...), years: int = 12):
+    """单只股票的长期走势图数据：月线收盘 + 历史上涨段区间 + MA120/MA250。"""
+    try:
+        return _clean(beton.chart_data(code, {"hist_years": int(years)}))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e), "bars": [], "dates": []}
 
 
 # ============ 蚂蚁呀欸 ============

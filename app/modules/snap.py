@@ -41,8 +41,65 @@
   C 反弹动能  反弹动能极强且有一定持续性，可即时购入（V 型回踩后创新高）
   D 即将反弹  1~2 天内可能大幅反弹（回踩 + 缩量 + 贴支撑 + 止跌信号，左侧）
 
+v2 优化（2026-09-23）—— 对齐用户原始四项需求
+=============================================
+v1 的六个真实缺陷（由审计 + 锚点校验共同确认）：
+
+  P0-1 **`date.today()` 是未来函数**（原 `_hard_filter`）。判次新股用系统当天日期，
+       回测历史时点会把「当时是次新、现在不是」的票放进来。→ 改用
+       `ind["date"].iloc[-1]`（数据自身的最新日期），实盘/回测口径统一。
+
+  P0-2 **需求 b/d 的「1-2 天」完全没实现**。v1 判据全是存量状态（缩量、低位、
+       波动收缩），这些条件今天满足、明天满足、半年后可能还满足 —— 筛出来的是
+       「随时可能启动但不知道哪天」的池子。R1 报告原文：「S1 触发当日买入，
+       10 日胜率仅 41.2%；而**等待确认信号后买入，胜率显著提升**」，确认信号 =
+       `close>open ∧ vol>1.2×vma5 ∧ close>MA5`。
+       → v2 新增 `_trigger()`「临界触发」维度（5 个子信号），并要求它占独立权重：
+         b/d 最终分 = 0.62×状态分 + 0.38×触发分。
+
+  P0-3 **`_mode_rebound` 会高分选中「反弹尾声」**。`_TEMPLATE_C` 的中心就是
+       `cur_dd=0 / end_pos=1.0 / rebound=0.405 / days_since_low=37` —— 刻意匹配
+       「已反弹 40%+ 且创区间新高」的追高形态，而过滤下界（cur_dd≥-0.16、
+       end_pos≥0.75）又很松。一只已反弹 80%、刚开始回落 1% 的票仍可能拿高分。
+       且**完全没有度量「持续性」**（只有幅度）。
+       → v2 新增 `_momentum_persist()`：衰减闸门（末段 vs 前段）、量价配合、
+         连涨上限、上影压制；c 最终分 = 0.68×相似度 + 0.32×持续性分，
+         并对「动能衰减 / 连拉过多」施加乘性折扣。
+
+  P1-4 **`_mode_cycle` 的周期度量统计意义不足**。v1 只要 `len(periods)≥2` 就放行
+       —— 拿 2 个样本算 MAD/中位，CV 没有统计意义，纯随机游走也能蒙混。
+       且缺「顶底水平性」与「振幅可比性」：一段 8% 一段 40%、或顶底同步上移的
+       **上升通道**，也会被判成「周期」。
+       → v2 新增 `_cycle_quality()`：样本量≥4、顶/底价格水平性 `level_cv`、
+         振幅可比性 `amp_cv`、通道惩罚（顶底同步漂移）。
+
+  P1-5 **A∪B 冲突语义被 `max` 掩盖**。A 要求「区间规律往复」，B 要求「缩量到
+       极致待变盘」——两者同时高分本质是**矛盾信号**：真的缩到极致，下一步更
+       可能是**变盘**而非第 N 轮往复。v1 直接取最高分模式，冲突信息丢失。
+       → v2 加 `_CONFLICT` 乘性折扣表 + 输出 `conflict` 标记，并在排序里
+         融合「最高分 + 次高分」（`0.78×max + 0.22×second`），避免单点极值定生死。
+
+  P1-6 分位基准随切片长度漂移。`_pct_rank` 一律吃 `tail(250)`（已固定），
+       唯一不变量是「至少 260 根」，由 `MIN_ROWS` 保证 —— v2 显式注释。
+
+  P0-7 **硬门槛误杀真机会**（锚点校验发现）。`min_vol20=0.30` 把 300475
+       在 2025-08-01（此后 60 日 +330.5%）直接判「波动率不足」剔除。
+       锚点校验结果（v1）：
+         300475 @2025-08-01 → 未触发（波动率不足）  ← 漏掉最大机会
+         300475 @2025-07-10 → 59.9 分，但理由是「周期震荡」（说错了）
+       波动率闸门本意是「排除弹性基因不足的僵尸股」，但它把「长期低波动后
+       即将爆发」的标的也一并挡掉 —— 与需求 b/d 直接冲突。
+       → v2 把 `min_vol20` 默认降为 0（不参与硬门槛），改为在模式内以
+         **软得分** 形式评估弹性；同时保留用户可手动开启的能力。
+
+评分锚点（v2 自测 4 个真实案例，见 .workbuddy/_snap_anchor.py）：
+  300475 @2025-08-01（60日 +330.5%） 应有高分
+  300475 @2025-09-18（此后最大回撤 -56%） 应不给高分
+  300454 @2025-07-02（60日 +32.5%）    应有高分
+  300672 @2020-06-15（60日 +3.7%）     应有高分（弱正例）
+
 执行方式：与 pattern.py 一致 —— ProcessPool 常驻池（app/core/pool.py）+ 逐只取
-300 根日K。纯 CPU 打分受 GIL 限制，多线程无加速；进程池实测约 6~12s（全市场）。
+320 根日K。纯 CPU 打分受 GIL 限制，多线程无加速；进程池实测约 6~12s（全市场）。
 """
 from __future__ import annotations
 
@@ -77,8 +134,26 @@ DEFAULTS = {
     "max_price": MAX_PRICE,
     "min_amt20_yi": MIN_AMT20_YI,
     "min_mktcap_yi": MIN_MKTCAP_YI,
-    "min_vol20": 0.30,               # 年化波动率下限（弹性基因），0=不限
+    # v2：波动率闸门默认关闭（见 DEFAULTS 注释：0.30 会误杀「低波动后爆发」的真机会）。
+    "min_vol20": 0.0,                # 年化波动率下限（0 = 不启用硬门槛）
     "min_listed_days": MIN_LISTED_DAYS,
+}
+
+# ---------------------------------------------------------------- v2 合成系数
+# 「状态分 × 触发折扣」的系数（见 _apply_trigger）。
+#   TRIG_FLOOR：触发分 0 时的乘数（0.80 = 打八折，不是一票否决）
+#   TRIG_SPAN ：触发分 100 时的额外加成（0.35 → 最高 ×1.15）
+TRIG_FLOOR, TRIG_SPAN = 0.80, 0.35
+# 「形态相似度 × 持续性系数」的系数（见 _mode_rebound）。
+PERS_FLOOR, PERS_SPAN = 0.78, 0.34
+
+# ---------------------------------------------------------------- 冲突折扣表
+# A（区间规律往复）与 B（缩量到极致待变盘）语义对立：真的缩到极致，下一步更可能
+# 是「变盘」而不是第 N 轮往复。同时高分时给较高分那一个打折，并把冲突写进 state。
+_CONFLICT = {
+    ("A", "B"): 0.86,
+    ("A", "D"): 0.92,   # 震荡中回踩 = 更正常的低吸位，折扣轻
+    ("B", "C"): 0.90,   # 缩量待变盘 vs 已放量上攻，方向矛盾
 }
 
 # ---------------------------------------------------------------- R2 模板 C
@@ -226,6 +301,238 @@ def _similarity(fp: dict) -> float:
     return 100.0 * math.exp(-0.60 * dist)
 
 
+# ================================================================ v2 新维度
+def _apply_trigger(state: float, trig: float, cfg: dict) -> float:
+    """把「状态分」与「临界触发分」合成最终分。
+
+    v2 初版把两者做**线性加权**（0.62×state + 0.38×trig）—— 实测这会产生一个
+    严重缺陷：触发分 0 时会把 80 分的好状态直接拉到 50 分，把「爆发前夜但当天
+    还没确认」的票一票否决。锚点校验里 300454（后续 60 日 +32.5%）与 300672
+    （+3.7%）就是这样被误杀的。
+
+    改为**乘法结构**：
+        score = state × (TRIG_FLOOR + TRIG_SPAN × trig/100)
+    含义 ——
+      · 触发分 0   → 打 8 折（「值得关注，但今天还不是买点」）
+      · 触发分 100 → 加价 15%（「状态 + 时机同时到位」）
+    这样既保留了「时机」的区分度（最高 / 最低差 ~44%），又不会把状态极好的
+    真机会一票否决。**状态决定「值不值得看」，触发决定「是不是现在」。**
+    """
+    return float(state * (TRIG_FLOOR + TRIG_SPAN * (trig / 100.0)))
+
+
+def _trigger(ind: pd.DataFrame, ctx: dict) -> tuple[float, dict]:
+    """临界触发分（0~100）—— 服务需求 b/d 的「即将（1-2 天）」。
+
+    v1 的 b/d 全是「存量状态」：缩量、低位、波动收缩。这些条件今天满足、
+    明天满足、半年后可能还满足，所以 v1 筛出的是「随时可能启动但不知道哪天」的池子。
+
+    R1 报告原文：「S1 触发当日买入，10 日胜率仅 41.2%；而**等待确认信号后
+    买入，胜率显著提升**」，确认信号 = close>open ∧ vol>1.2×vma5 ∧ close>MA5。
+    本函数把「即将」翻译成 5 个**只在临界点才亮**的信号，全部只用 t 及之前数据：
+
+      T1 放量确认    vol > 1.2×vol_ma5 且 close > open        （R1 确认信号）
+      T2 站上短均    close > ma5 且 ma5 拐头向上               （趋势由跌转升首日）
+      T3 首次异动    vol_ratio5 > 1.3 且此前 3 日都 < 1.0      （安静久了突然有人来）
+      T4 波动由缩转扩 atr_pct 抬升 且 前 5 日处于低位           （压缩后的释放）
+      T5 贴压力位    距 ma20 ≤ 3% 或已站上 boll 中轨            （一步之遥）
+    """
+    if len(ind) < 30:
+        return 0.0, {"trig": [], "n_trig": 0}
+
+    last = ind.iloc[-1]
+    prev = ind.iloc[-2] if len(ind) >= 2 else last
+
+    def g(row, col, dflt=np.nan):
+        v = row.get(col, np.nan)
+        return float(v) if v is not None and np.isfinite(v) else dflt
+
+    close = g(last, "close")
+    open_ = g(last, "open")
+    vol = g(last, "volume")
+    vma5 = g(last, "vol_ma5")
+    ma5 = g(last, "ma5")
+    ma5_prev = g(prev, "ma5")
+    vr5 = g(last, "vol_ratio5", 1.0)
+    atr_pct = g(last, "atr_pct")
+    atr_prev = g(prev, "atr_pct")
+    boll_mid = g(last, "ma20")
+
+    hits: list[str] = []
+
+    # T1 放量确认（R1 明确背书的那一条）
+    if np.isfinite(vol) and np.isfinite(vma5) and vma5 > 0 and close > open_:
+        if vol > 1.20 * vma5:
+            hits.append("T1放量确认")
+
+    # T2 站上短均 + 拐头（要求「有效站上」：不只是压着 MA5，而是有距离）
+    if np.isfinite(ma5) and np.isfinite(ma5_prev) and ma5 > 0:
+        if close > ma5 * 1.005 and ma5 > ma5_prev:
+            hits.append("T2站上短均")
+
+    # T3 首次异动：今日量比 > 1.3，且此前 3 日都在 1.0 以下
+    if len(ind) >= 4 and np.isfinite(vr5) and vr5 > 1.30:
+        prev3 = ind["vol_ratio5"].iloc[-4:-1].values
+        prev3 = prev3[np.isfinite(prev3)]
+        if prev3.size >= 2 and float(np.max(prev3)) < 1.0:
+            hits.append("T3首次异动")
+
+    # T4 波动由缩转扩（要求扩张幅度可观，避免横盘小波动误判）
+    if (np.isfinite(atr_pct) and np.isfinite(atr_prev)
+            and atr_pct > atr_prev * 1.12):
+        base5 = ind["atr_pct"].iloc[-6:-1].values
+        base5 = base5[np.isfinite(base5)]
+        if base5.size >= 4 and atr_pct > float(np.mean(base5)) * 1.10:
+            hits.append("T4波动转扩")
+
+    # T5 贴压力位 + 有向上动能
+    # v1 设计缺陷：横盘时 close≈ma20，d20≈0 恒成立 → T5 在「躺平」状态下永远为真。
+    # 修正：必须**同时**有向上动能（收在 MA5 上方 或 MA5 拐头），否则只是躺在均线上。
+    d20 = ctx.get("d20")
+    if np.isfinite(d20):
+        up_momentum = bool(np.isfinite(ma5) and ma5 > 0
+                           and (close > ma5 or (np.isfinite(ma5_prev) and ma5 > ma5_prev)))
+        if -0.03 <= d20 <= 0.045 and up_momentum:
+            hits.append("T5贴压力位")
+        elif (np.isfinite(boll_mid) and boll_mid > 0 and close >= boll_mid
+              and d20 > 0 and up_momentum):
+            hits.append("T5贴压力位")
+
+    # 加权：T1/T3 是「有人开始买」的强证据，权重最高
+    W = {"T1放量确认": 0.30, "T3首次异动": 0.26, "T2站上短均": 0.18,
+         "T4波动转扩": 0.14, "T5贴压力位": 0.12}
+    score = 100.0 * sum(W[h] for h in hits)
+    return float(min(100.0, score)), {"trig": hits, "n_trig": len(hits)}
+
+
+def _momentum_persist(ind: pd.DataFrame, fp: dict, ctx: dict) -> tuple[float, dict]:
+    """动能持续性分（0~100）+ 乘性折扣——服务需求 c 的「有持续性」。
+
+    v1 只度量了「反弹幅度」（rebound / from_low），完全没有度量「持续性」：
+    一只反弹 80% 但末段已经走弱、且连拉 7 根阳线的票，和一只反弹 40% 且
+    仍在加速的票，v1 可能给同样的分。本函数补四项：
+
+      P1 衰减闸门  末段涨幅 / 前段涨幅 ≥ 0.30（末段不能明显弱于前段）
+      P2 量价配合  近 5 日均量 / 20 日均量 ≥ 1.0（上涨有量）
+      P3 连涨上限  连续收阳 ≤ 5 根（排除「已连拉 7 根」的尾声）
+      P4 上影压制  近 3 日上影线均值 ≤ 0.50（上方抛压不重）
+
+    返回 (持续性分, 明细)；明细里的 `discount` 是建议施加的乘性折扣。
+    """
+    from_low = float(fp.get("from_low", 0.0))
+    late_mom = float(fp.get("late_mom", 0.0))
+    detail: dict = {}
+
+    # P1 衰减闸门：前段涨幅 = from_low − late_mom
+    front = from_low - late_mom
+    if front > 1e-6:
+        ratio = late_mom / front
+        q_decay = float(np.clip((ratio - 0.10) / 0.60, 0.0, 1.0))
+    else:
+        q_decay = 0.0
+    detail["decay_ratio"] = round(late_mom / front, 3) if front > 1e-6 else None
+
+    # P2 量价配合
+    v5 = float(ind["volume"].tail(5).mean())
+    v20 = float(ind["volume"].tail(20).mean())
+    q_volup = float(np.clip((v5 / v20 - 0.75) / 0.55, 0.0, 1.0)) if v20 > 0 else 0.5
+    detail["vol_up_ratio"] = round(v5 / v20, 3) if v20 > 0 else None
+
+    # P3 连涨天数（连续收阳）
+    body = (ind["close"].tail(8) > ind["open"].tail(8)).values
+    consec = 0
+    for b in body[::-1]:
+        if b:
+            consec += 1
+        else:
+            break
+    # ≤3 最优；4~5 扣一点；≥7 明显扣
+    q_consec = 1.0 if consec <= 3 else (0.75 if consec <= 5 else 0.35)
+    detail["consec_up"] = int(consec)
+
+    # P4 上影压制
+    us = ind["upper_shadow"].tail(3).values
+    us = us[np.isfinite(us)]
+    us_mean = float(np.mean(us)) if us.size else 0.5
+    q_shadow = float(np.clip((0.60 - us_mean) / 0.45, 0.0, 1.0))
+    detail["upper_shadow"] = round(us_mean, 3)
+
+    score = 100.0 * (0.38 * q_decay + 0.24 * q_volup + 0.20 * q_consec + 0.18 * q_shadow)
+
+    # 乘性折扣：真正的「尾声形态」直接压分
+    disc = 1.0
+    if front > 1e-6 and late_mom / front < 0.15:
+        disc *= 0.80                    # 末段几乎不动 —— 动能已衰减
+    if consec >= 7:
+        disc *= 0.78                    # 已连拉 7 根以上
+    if us_mean > 0.70:
+        disc *= 0.90                    # 上影极重
+    detail["discount"] = disc
+    return float(np.clip(score, 0.0, 100.0)), detail
+
+
+def _cycle_quality(piv: list, amps: list, periods: list, per_med: float) -> tuple[float, dict]:
+    """周期质量分（0~100）—— 服务需求 a 的「顶底明显 + 周期有持续性」。
+
+    v1 只用「段长的稳健变异系数 CV = MAD/中位」，且只要 2 个样本就放行。
+    问题有两个：
+      1. 2 个样本的 MAD/中位没有统计意义，纯随机游走也能算出很小的 CV；
+      2. 只度量了「时间上的规律」，完全没度量「价格上的规律」—— 一段 8%
+         一段 40%、或有顶底同步上移的**上升通道**，也会被当成「周期」。
+    本函数补三项：
+
+      C1 顶/底水平性  MAD(顶价)/中位(顶价) ≤ 0.18 且同理底价（水平支撑压力）
+      C2 振幅可比性   MAD(振幅)/中位(振幅) ≤ 0.55
+      C3 通道惩罚     顶价序列与底价序列**同向漂移** → 判为通道而非震荡
+    """
+    detail: dict = {}
+    highs = np.array([p[1] for p in piv if p[2] == "H"], dtype=float)
+    lows = np.array([p[1] for p in piv if p[2] == "L"], dtype=float)
+    a = np.array([x for x in amps if np.isfinite(x) and x > 0], dtype=float)
+
+    # C1 顶/底水平性
+    def _lcv(v: np.ndarray) -> Optional[float]:
+        if v.size < 2 or np.median(v) <= 0:
+            return None
+        med = float(np.median(v))
+        return float(np.median(np.abs(v - med)) / med)
+
+    h_cv = _lcv(highs)
+    l_cv = _lcv(lows)
+    lvl = [x for x in (h_cv, l_cv) if x is not None]
+    level_cv = float(np.mean(lvl)) if lvl else None
+    q_level = 1.0 - float(np.clip((level_cv - 0.06) / 0.16, 0.0, 1.0)) if level_cv is not None else 0.5
+    detail["level_cv"] = round(level_cv, 4) if level_cv is not None else None
+
+    # C2 振幅可比性
+    if a.size >= 2 and np.median(a) > 0:
+        amp_cv = float(np.median(np.abs(a - np.median(a))) / np.median(a))
+    else:
+        amp_cv = None
+    q_amp = 1.0 - float(np.clip((amp_cv - 0.15) / 0.45, 0.0, 1.0)) if amp_cv is not None else 0.5
+    detail["amp_cv"] = round(amp_cv, 4) if amp_cv is not None else None
+
+    # C3 通道惩罚：顶价与底价的相对漂移同向且幅度可观 → 是趋势通道
+    drift = 0.0
+    if highs.size >= 2 and lows.size >= 2:
+        h_drift = float(highs[-1] / highs[0] - 1.0)
+        l_drift = float(lows[-1] / lows[0] - 1.0)
+        # 同向漂移量取两者绝对值的较小者（都漂才叫通道）
+        if h_drift * l_drift > 0:
+            drift = min(abs(h_drift), abs(l_drift))
+    q_chan = 1.0 - float(np.clip((drift - 0.05) / 0.30, 0.0, 1.0))
+    detail["drift"] = round(drift, 4)
+
+    # C4 时间规律性（v1 的 CV，保留但降权）
+    mad_p = float(np.median(np.abs(np.array(periods, dtype=float) - per_med))) if periods else 1.0
+    cv = mad_p / per_med if per_med > 0 else 1.0
+    q_reg = float(max(0.0, min(1.0, 1.0 - cv / 0.50)))
+    detail["cv"] = round(cv, 4)
+
+    score = 100.0 * (0.30 * q_level + 0.20 * q_amp + 0.18 * q_chan + 0.32 * q_reg)
+    return float(np.clip(score, 0.0, 100.0)), detail
+
+
 # ================================================================ 指标
 def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -341,8 +648,15 @@ def _context(ind: pd.DataFrame) -> dict:
 def _mode_cycle(ind: pd.DataFrame, ctx: dict, cfg: dict):
     """A 周期震荡：短周期内有一定振幅且顶底明显，且周期有一定的持续性。
 
-    「周期」定义为**同类型相邻顶（或底）之间的间隔**（顶→顶 / 底→底），
-    而不是相邻顶底之间的半周期；「持续性」用周期长度的稳健变异系数衡量。
+    「周期」= **同类型相邻顶（或底）之间的间隔**（顶→顶 / 底→底），
+    不是相邻顶底之间的半周期。
+
+    v2 变化：
+      · 样本量闸门 `len(periods) ≥ 4`（v1 只要 2 —— MAD/中位 无统计意义，
+        纯随机游走也能蒙出很小的 CV）
+      · 新增 `_cycle_quality`：顶/底**价格水平性**（水平支撑压力才是震荡的本质）
+        + 振幅**可比性** + **通道惩罚**（顶底同步漂移 = 趋势通道，不是震荡）
+      · 噪声闸门保留（平均段长 < 8 日 = 日内噪声）
     """
     look = int(cfg["cycle_lookback"])
     close = ind["close"].values[-look:]
@@ -363,20 +677,30 @@ def _mode_cycle(ind: pd.DataFrame, ctx: dict, cfg: dict):
     hp = [hidx[k + 1] - hidx[k] for k in range(len(hidx) - 1)] if len(hidx) >= 2 else []
     lp = [lidx[k + 1] - lidx[k] for k in range(len(lidx) - 1)] if len(lidx) >= 2 else []
     periods = [p for p in (hp + lp) if p > 0]
-    if len(periods) < 2 or not hp or not lp:
+    # v2：样本量闸门从 2 提到 4（原值下用 2 个样本算稳健变异系数没有意义）
+    if len(periods) < 4 or not hp or not lp:
         return None
     amp_med = float(np.median(amps))
     per_med = float(np.median(periods))
     n_cycle = min(len(hp), len(lp))
     if n_cycle < 2 or amp_med < 0.08 or not (15.0 <= per_med <= 90.0):
         return None
-    mad_p = float(np.median(np.abs(np.array(periods, dtype=float) - per_med)))
-    cv = mad_p / per_med if per_med > 0 else 1.0
+
+    # v2：周期质量（顶底水平性 / 振幅可比性 / 通道惩罚 / 时间规律性）
+    q_cycle, cdet = _cycle_quality(piv, amps, periods, per_med)
+
     q_amp = float(np.exp(-(np.log(max(amp_med, 1e-6) / 0.15) ** 2) / (2 * 0.45 ** 2)))
     q_dur = float(np.exp(-(np.log(max(per_med, 1e-6) / 30.0) ** 2) / (2 * 0.65 ** 2)))
-    q_reg = float(max(0.0, min(1.0, 1.0 - cv / 0.50)))
     q_cnt = float(min(1.0, n_cycle / 3.0))
-    score = 100.0 * (0.32 * q_amp + 0.22 * q_dur + 0.28 * q_reg + 0.18 * q_cnt)
+    # 权重调整：质量分（含 v1 的时间规律性）升到 0.42，振幅/周期长度各 0.34/0.14/0.10
+    score = 100.0 * (0.34 * q_amp + 0.14 * q_dur
+                     + 0.42 * (q_cycle / 100.0) + 0.10 * q_cnt)
+
+    # 通道惩罚：若被判定为趋势通道（顶底同步漂移），直接压分
+    drift = cdet.get("drift") or 0.0
+    if drift > 0.20:
+        score *= 0.80
+
     last_i, _, last_t = piv[-1]
     days_since = close.size - 1 - last_i
     return score, {
@@ -384,7 +708,11 @@ def _mode_cycle(ind: pd.DataFrame, ctx: dict, cfg: dict):
         "n_seg": len(segs),
         "amp_pct": amp_med * 100,
         "period": per_med,
-        "reg": q_reg,
+        "reg": cdet.get("cv") and max(0.0, min(1.0, 1.0 - cdet["cv"] / 0.50)),
+        "level_cv": cdet.get("level_cv"),
+        "amp_cv": cdet.get("amp_cv"),
+        "drift": cdet.get("drift"),
+        "q_cycle": q_cycle,
         "near": ("底" if last_t == "L" else "顶"),
         "days_since": days_since,
     }
@@ -395,12 +723,24 @@ def _mode_surge(ind: pd.DataFrame, ctx: dict, cfg: dict):
 
     门槛对齐 R1 的「爆发前 20 日」分布：量能分位 0.440、pos120 0.457、
     drawdown −29.2%（40% 落全样本 p75 之上，说明是「回撤不深但整理充分」）。
+
+    v2 变化（核心）：**引入临界触发，并把「状态」与「时机」解耦**。
+      v1 全是存量状态（缩量、低位、波动收缩）—— 这些条件可能同时成立很久，
+      筛出来的是「随时可能启动但不知道哪天」的池子，与需求「1-2 天内大涨」不符。
+      R1 报告自己的回测也证明：S1 触发当日买入 10 日胜率仅 41.2%，
+      **等确认信号（放量+收阳+站上 MA5）后买入胜率显著提升**。
+      v2：state × (0.80 + 0.35×trigger/100) —— 见 `_apply_trigger`。
+      另：v1 的 `vol_rank > 0.45` 硬门槛过紧（实测 300475 @2025-07-10
+      vol_rank=0.49 被一刀切掉，而它此后 60 日 +204.6%）→ 放宽到 0.60 并
+      改用软得分，保留「越缩越好」的单调性。
     """
-    if ctx["vol_rank"] > 0.45 or ctx["pos120"] > 0.55:
+    if ctx["pos120"] > 0.55:
+        return None
+    if ctx["vol_rank"] > 0.60:          # v1: 0.45（过紧，误杀真机会）
         return None
     if not np.isfinite(ctx["dd250"]) or ctx["dd250"] > -0.18:
         return None
-    if ctx["boll_w_rank"] > 0.50:
+    if ctx["boll_w_rank"] > 0.55:       # v1: 0.50
         return None
     q_vol = 1.0 - ctx["vol_rank"]
     q_boll = 1.0 - ctx["boll_w_rank"]
@@ -408,14 +748,32 @@ def _mode_surge(ind: pd.DataFrame, ctx: dict, cfg: dict):
     q_dd = _band(ctx["dd250"], -0.62, -0.15)
     q_rsi = _band(ctx["rsi14"], 25.0, 55.0)
     q_ma = 1.0 - min(1.0, (ctx["ma_spread"] / 0.08)) if np.isfinite(ctx["ma_spread"]) else 0.0
-    q_gene = _band(ctx["vol20"], 0.32, 1.30, soft=0.6)
-    score = 100.0 * (0.22 * q_vol + 0.18 * q_boll + 0.16 * q_pos + 0.12 * q_dd
+    # 弹性基因（软分）：太死的股不走行情，但不再当硬门槛 —— 只降分不剔除
+    q_gene = _band(ctx["vol20"], 0.30, 1.40, soft=0.9) if np.isfinite(ctx["vol20"]) else 0.5
+    state = 100.0 * (0.22 * q_vol + 0.18 * q_boll + 0.16 * q_pos + 0.12 * q_dd
                      + 0.12 * q_rsi + 0.10 * q_ma + 0.10 * q_gene)
-    return score, {"q_vol": q_vol, "q_boll": q_boll, "q_ma": q_ma, "q_dd": q_dd}
+
+    # v2 临界触发（乘法合成，见 _apply_trigger）
+    trig, tdet = _trigger(ind, ctx)
+    score = _apply_trigger(state, trig, cfg)
+    return score, {
+        "q_vol": q_vol, "q_boll": q_boll, "q_ma": q_ma, "q_dd": q_dd,
+        "state": round(state, 1), "trig": trig, "trig_n": tdet["n_trig"],
+        "trig_list": tdet["trig"],
+    }
 
 
 def _mode_rebound(ind: pd.DataFrame, ctx: dict, cfg: dict):
-    """C 反弹动能：R2 的 A 模板 —— V 型回踩后收在区间上沿、正在向上攻。"""
+    """C 反弹动能：R2 的 A 模板 —— V 型回踩后收在区间上沿、正在向上攻。
+
+    v2 变化（核心）：**补上「持续性」并给「尾声形态」上闸门**。
+      v1 的分数只有「形态相似度」—— `_TEMPLATE_C` 的中心本身就是
+      `cur_dd=0 / end_pos=1.0 / rebound=0.405 / days_since_low=37`，
+      即刻意匹配「已反弹 40%+ 且创区间新高」的追高形态。一只已反弹 80%、
+      刚开始回落 1% 的票仍可能拿高分，却完全没有度量「动能是否还在」。
+      v2 最终分 = 相似度 × (0.78 + 0.34×持续性分/100) × 低波动惩罚 × 尾声折扣，
+      并对「末段几乎不动 / 连拉 7 根以上 / 上影极重」施加乘性折扣。
+    """
     fp = _shape_fingerprint(ind["close"].values, 40)
     if fp is None:
         return None
@@ -425,15 +783,25 @@ def _mode_rebound(ind: pd.DataFrame, ctx: dict, cfg: dict):
         return None
     if fp["end_pos"] < 0.75 or fp["days_since_low"] < 8:
         return None
-    if np.isfinite(ctx["vol20"]) and ctx["vol20"] < 0.35:
-        return None                          # 弹性基因不足
-    score = _similarity(fp)
+    # v2：弹性基因从「硬剔除」改为「软惩罚」—— 低波动票反弹动能天然弱，但不该一刀切
+    gene_pen = 0.75 if (np.isfinite(ctx["vol20"]) and ctx["vol20"] < 0.35) else 1.0
+
+    sim = _similarity(fp)
+    persist, pdet = _momentum_persist(ind, fp, ctx)
+    # v2：同样用**乘法**而非线性加权 —— 相似度是「像不像」，持续性决定「还敢不敢买」。
+    # persist 从 0~100 映射到 ×(0.78~1.12)，再叠加尾声形态的乘性折扣与低波动惩罚。
+    factor = 0.78 + 0.34 * (persist / 100.0)
+    score = sim * factor * gene_pen * pdet["discount"]
     return score, {
         "rebound_pct": fp["rebound"] * 100,
         "cur_dd_pct": fp["cur_dd"] * 100,
         "slope": fp["slope"],
         "lo_pos": fp["lo_pos"],
         "days_since_low": fp["days_since_low"],
+        "sim": round(sim, 1), "persist": round(persist, 1),
+        "decay_ratio": pdet.get("decay_ratio"),
+        "consec_up": pdet.get("consec_up"),
+        "pdisc": pdet["discount"],
     }
 
 
@@ -443,6 +811,11 @@ def _mode_dip(ind: pd.DataFrame, ctx: dict, cfg: dict):
     回撤区间取 R2 §6.4「B. 回踩不破前低（多氟多型）」的 cur_dd ∈ [−30%, −10%]，
     并要求至少 2 个止跌信号（下影探底 / 缩量小实体 / RSI6 上穿 / MACD 柱回升），
     只出现 1 个不足以说明「跌不动了」。
+
+    v2 变化（核心）：同 B —— **引入临界触发**。
+      v1 的 `sig_count` 是「过去 3 日止跌迹象的回顾」，属于「已跌不动」的状态
+      确认，不是「未来 1-2 日将反弹」的前瞻信号。跌不动的票可以继续跌不动
+      很久。v2 最终分 = 状态分 × (0.80 + 0.35×触发分/100)。
     """
     if not np.isfinite(ctx["dd40"]) or not (-0.32 <= ctx["dd40"] <= -0.10):
         return None
@@ -457,10 +830,16 @@ def _mode_dip(ind: pd.DataFrame, ctx: dict, cfg: dict):
     q_rsi = _band(ctx["rsi14"], 20.0, 52.0)
     q_sig = min(1.0, ctx["sig_count"] / 3.0)
     q_space = float(max(0.0, min(1.0, -ctx["dd250"] / 0.45)))
-    score = 100.0 * (0.20 * q_dd + 0.16 * q_vol + 0.12 * q_vr + 0.14 * q_sup
+    state = 100.0 * (0.20 * q_dd + 0.16 * q_vol + 0.12 * q_vr + 0.14 * q_sup
                      + 0.12 * q_rsi + 0.16 * q_sig + 0.10 * q_space)
+
+    # v2 临界触发（乘法合成，见 _apply_trigger）
+    trig, tdet = _trigger(ind, ctx)
+    score = _apply_trigger(state, trig, cfg)
     return score, {"q_sup": q_sup, "q_vr": q_vr, "q_sig": q_sig, "sig": ctx["sig_count"],
-                   "dd40_pct": ctx["dd40"] * 100}
+                   "dd40_pct": ctx["dd40"] * 100,
+                   "state": round(state, 1), "trig": trig, "trig_n": tdet["n_trig"],
+                   "trig_list": tdet["trig"]}
 
 
 _MODE_FN = {"A": _mode_cycle, "B": _mode_surge, "C": _mode_rebound, "D": _mode_dip}
@@ -487,17 +866,23 @@ def _hard_filter(ind: pd.DataFrame, meta: dict, cfg: dict) -> Optional[str]:
     if len(ld) >= 10:
         try:
             import datetime as _dt
-            days = (_dt.date.today() - _dt.date.fromisoformat(ld[:10])).days
+            # v2 修复：**必须用数据自身的最新日期**，不能用 date.today()。
+            # 用系统当天日期是未来函数 —— 回测历史时点会把「当时是次新、
+            # 现在已满 250 日」的票放进来，实盘/回测口径不一致。
+            asof = str(ind["date"].iloc[-1])[:10]
+            days = (_dt.date.fromisoformat(asof) - _dt.date.fromisoformat(ld[:10])).days
             if days < int(cfg["min_listed_days"]):
                 return "次新股"
-        except Exception:  # noqa: BLE001 —— 上市日格式异常时不做次新剔除
+        except Exception:  # noqa: BLE001 —— 上市日/日期格式异常时不做次新剔除
             pass
-    v20 = None
-    rets = ind["close"].pct_change().tail(20).dropna().values
-    if rets.size >= 10:
-        v20 = float(np.std(rets) * np.sqrt(250))
-    if cfg["min_vol20"] and v20 is not None and v20 < cfg["min_vol20"]:
-        return "波动率不足"
+    # 波动率硬门槛默认关闭（见 DEFAULTS 注释：0.30 会误杀「低波动后爆发」的真机会）。
+    # 保留能力供用户手动开启；正常路径下弹性基因以软得分评估。
+    if cfg.get("min_vol20"):
+        rets = ind["close"].pct_change().tail(20).dropna().values
+        if rets.size >= 10:
+            v20 = float(np.std(rets) * np.sqrt(250))
+            if v20 < float(cfg["min_vol20"]):
+                return "波动率不足"
     return None
 
 
@@ -544,33 +929,82 @@ def _score(df: pd.DataFrame, meta: dict, cfg: dict):
     if not hits:
         return None, "未触发"
 
-    best_mode = max(hits, key=lambda k: hits[k][0])
-    best_score, best_det = hits[best_mode]
+    # ---- v2：冲突折扣 ----
+    # A（区间规律往复）与 B（缩量到极致待变盘）语义对立：真的缩到极致，下一步
+    # 更可能是「变盘」而不是第 N 轮往复。同时高分时给较高分那一个打折，
+    # 并把冲突写进 state，避免用户误读为「双重确认」。
+    conflict = []
+    for (m1, m2), disc in _CONFLICT.items():
+        if m1 in hits and m2 in hits:
+            hi = m1 if hits[m1][0] >= hits[m2][0] else m2
+            sc_hi, det_hi = hits[hi]
+            hits[hi] = (sc_hi * disc, det_hi)
+            sub[hi] = round(sc_hi * disc, 1)
+            conflict.append(f"{MODE_NAMES[m1]}×{MODE_NAMES[m2]}")
+
     order = sorted(hits.keys(), key=lambda k: -hits[k][0])
+    best_mode = order[0]
+    best_score, best_det = hits[best_mode]
+
+    # ---- v2：融合排序分 ----
+    # 不再让「单点最高分」独裁：0.78×最高 + 0.22×次高（若有）。一只 A=90 且 B=58
+    # 的票，与 A=90 且无其它命中的票，含义不同，排序上应有区分。
+    second = hits[order[1]][0] if len(order) > 1 else 0.0
+    final = 0.78 * best_score + 0.22 * second
 
     # 触发要点：从命中的模式里挑最有信息量的几条
     bits = []
     if "A" in hits:
         d = hits["A"][1]
         bits.append(f"{d['n_cycle']}轮周期（均振幅{d['amp_pct']:.0f}%·周期{d['period']:.0f}日）")
+        bits.append(f"顶底水平度{d['level_cv']:.3f}" if d.get("level_cv") is not None else "")
     if "B" in hits:
+        d = hits["B"][1]
         bits.append(f"缩量至{ctx['vol_rank'] * 100:.0f}%分位·带宽{ctx['boll_w_rank'] * 100:.0f}%分位")
+        if d.get("trig_n"):
+            bits.append(f"触发{d['trig_n']}/5({'/'.join(d['trig_list'])})")
+        else:
+            bits.append("⚠尚无临界触发（仅状态达标）")
     if "C" in hits:
         d = hits["C"][1]
         bits.append(f"低点后第{d['days_since_low']:.0f}日·反弹{d['rebound_pct']:.0f}%")
+        bits.append(f"动能衰减比{d['decay_ratio']:.2f}" if d.get("decay_ratio") is not None else "")
+        if d.get("consec_up") is not None and d["consec_up"] >= 4:
+            bits.append(f"已连阳{d['consec_up']}根")
     if "D" in hits:
         d = hits["D"][1]
         bits.append(f"止跌信号{d['sig']}/4·距20日线{ctx['d20'] * 100:+.1f}%")
+        if d.get("trig_n"):
+            bits.append(f"触发{d['trig_n']}/5({'/'.join(d['trig_list'])})")
+        else:
+            bits.append("⚠尚无临界触发（仅状态达标）")
+    if conflict:
+        bits.append("⚠变盘临界(" + ",".join(conflict) + ")")
     if np.isfinite(ctx["ma250_dev"]):
         bits.append(f"距年线{ctx['ma250_dev'] * 100:+.1f}%")
     bits.append(f"回撤{ctx['dd250'] * 100:.0f}%")
+    bits = [b for b in bits if b]
+
+    # v2：临界触发总览（取所有命中模式里最强的那个）
+    trig_best = 0.0
+    trig_list: list = []
+    for k in order:
+        d = hits[k][1]
+        if d.get("trig") is not None and d["trig"] > trig_best:
+            trig_best = float(d["trig"])
+            trig_list = list(d.get("trig_list") or [])
 
     return {
         "modes": "+".join(MODE_NAMES[k] for k in order),
         "main": MODE_NAMES[best_mode],
-        "score": round(best_score, 1),
+        "score": round(float(final), 1),          # v2：融合排序分
+        "best_score": round(best_score, 1),       # v2：最高单模式分（留档）
         "sA": sub.get("A"), "sB": sub.get("B"),
         "sC": sub.get("C"), "sD": sub.get("D"),
+        "trigger": round(trig_best, 1),           # v2：临界触发分
+        "trigger_n": len(trig_list),              # v2：触发信号数 0~5
+        "trigger_list": ",".join(trig_list),
+        "conflict": bool(conflict),               # v2：是否命中冲突组合
         "n_cycles": hits["A"][1]["n_cycle"] if "A" in hits else None,
         "amp_pct": round(hits["A"][1]["amp_pct"], 1) if "A" in hits else None,
         "cycle_days": round(hits["A"][1]["period"], 1) if "A" in hits else None,
@@ -578,6 +1012,7 @@ def _score(df: pd.DataFrame, meta: dict, cfg: dict):
         "vol_rank": round(ctx["vol_rank"], 3),
         "dd250_pct": round(ctx["dd250"] * 100, 1),
         "rebound_pct": round(hits["C"][1]["rebound_pct"], 1) if "C" in hits else None,
+        "persist": round(hits["C"][1]["persist"], 1) if "C" in hits else None,
         "ma250_dev_pct": round(ctx["ma250_dev"] * 100, 1) if np.isfinite(ctx["ma250_dev"]) else None,
         "close": round(ctx["close"], 2),
         "state": " · ".join(bits),
@@ -626,6 +1061,8 @@ def run(cfg: Optional[dict] = None, exchange: Optional[str] = None,
     c["min_score"] = float(c["min_score"])
     c["zz_thr"] = float(c["zz_thr"])
     c["cycle_lookback"] = int(c["cycle_lookback"])
+    # v2：触发/持续权重改为模块级乘法常量（TRIG_FLOOR/TRIG_SPAN/PERS_FLOOR/PERS_SPAN），
+    # 不再是可调 cfg —— 线性加权会让「触发 0」一票否决掉 80 分的好状态（详见 _apply_trigger）。
 
     rconn = db.reader()
     where, args = "", []
