@@ -1136,7 +1136,10 @@ def _download_audio(bvid: str, url: str, c: dict) -> str:
     """下载音频到本地（走磁盘缓存，同一视频只下一次）。返回本地路径。"""
     vdir = c.get("video_local_dir") or _VIDEO_DIR
     os.makedirs(vdir, exist_ok=True)
-    dst = os.path.join(vdir, f"{bvid}.m4a")
+    # bvid 来自 B站接口返回，理论上不应含路径分隔符；仍按 _archive_path 的同样口径
+    # 只保留字母数字再拼文件名，避免远端串里的 "../" 把写入点带出 vdir。
+    safe_bvid = re.sub(r"[^A-Za-z0-9]", "", str(bvid))[:24] or "audio"
+    dst = os.path.join(vdir, f"{safe_bvid}.m4a")
     if os.path.isfile(dst) and os.path.getsize(dst) > 4096:
         return dst
     try:

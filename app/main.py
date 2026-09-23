@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""合集·筛骨 2.0 — A 股量化选股合并工具（FastAPI 服务）。"""
+"""合集·筛股 2.0 — A 股量化选股合并工具（FastAPI 服务）。"""
 import logging
 import os
 import sys
@@ -26,7 +26,7 @@ DB_PATH = os.environ.get(
     os.path.join(_ROOT, "data", "unified_data.db"))
 core_db.set_db_path(DB_PATH)
 
-app = FastAPI(title="合集·筛骨 2.0", version="2.0")
+app = FastAPI(title="合集·筛股 2.0", version="2.0")
 app.include_router(router)
 
 WEB_DIR = os.path.join(_HERE, "web")

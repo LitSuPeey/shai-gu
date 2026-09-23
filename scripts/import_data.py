@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-一键从 Github版本/stock_data.db 导入基础数据到 data/unified_data.db
+一键从 GitHub 版本/stock_data.db 导入基础数据到 data/unified_data.db
 只需在首次部署时运行一次（约 10~20 分钟，取决于机器磁盘）。
 后续日常更新由 Web 界面「拉取数据」按钮触发增量同步（AKShare）。
 """
