@@ -2,7 +2,7 @@
 """多源增量同步：按各源优势组合拉取基础信息 + 日K/估值/分红。
 
 ========================================================================
-【2026-09-07 架构与效率优化日志】（详见仓库根目录 SYNC_LOG.md）
+【2026-09-07 架构与效率优化日志】（内部开发记录，未随仓库发布）
 ------------------------------------------------------------------------
 重要更正："akshare × adata 联动" 已被证伪——本项目**从不 import adata**：
 adata 的 kline 与本项目的东财直连是同一接口(EM push2his)，而本项目实现
@@ -26,7 +26,7 @@ adata 的 kline 与本项目的东财直连是同一接口(EM push2his)，而本
   C) 日K：当前 fallback 链 新浪(stock_zh_a_daily, 单位恒为股) → 腾讯
      (stock_zh_a_hist_tx, 单位不统一, 已加 _autofix_volume_unit 自洽校验)。
      东财 push2his 目前被 WAF 整体封锁(~8h冷却)，故"东财批量快照补最新一根"
-     暂不可行，待解封后按 SYNC_LOG.md 的验证方案再接入。
+     暂不可行，待解封后按既有验证方案再接入。
 
 口径统一（出口硬约束）：volume=股、amount=元、turnover=小数、outstanding=股。
 历史曾两次踩坑：①成交额误×100 ②腾讯「手」当「股」写库(量小100倍)，均会让
@@ -757,7 +757,7 @@ def fetch_dividend(code: str, timeout: int = 15) -> Optional[list]:
 # v2（2026-09-10）把「按报告期逐期串行取页」改为「按除权除息日窗口 + 并发取页」。
 #   全市场实测：旧 10 期 / 28 请求 / 9.36s → 新 11 页 / 并发 / 1.56s = 6.0×，
 #   且窗口内结果集与旧实现完全等价（旧有新无仅窗口外的更早记录，新有旧无 0 条）。
-#   详见 SYNC_LOG.md §3.4。
+#   细节见本模块顶部 docstring 的「架构与效率优化日志」小节。
 _FHPS_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _FHPS_SESS = None
 _FHPS_SESS_LOCK = threading.Lock()
